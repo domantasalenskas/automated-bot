@@ -201,10 +201,10 @@ class AutoclickerApp:
 
         coord_row = ttk.Frame(region_frame)
         coord_row.pack(fill=tk.X, pady=(4, 0))
-        self.region_x_var = tk.StringVar(value="0")
-        self.region_y_var = tk.StringVar(value="0")
-        self.region_w_var = tk.StringVar(value="0")
-        self.region_h_var = tk.StringVar(value="0")
+        self.region_x_var = tk.StringVar(value="1106")
+        self.region_y_var = tk.StringVar(value="18")
+        self.region_w_var = tk.StringVar(value="67")
+        self.region_h_var = tk.StringVar(value="17")
         for label, var in [
             ("X:", self.region_x_var),
             ("Y:", self.region_y_var),
@@ -263,18 +263,18 @@ class AutoclickerApp:
         trig_row1 = ttk.Frame(trigger_frame)
         trig_row1.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(trig_row1, text="Trigger color:").pack(side=tk.LEFT, padx=(0, 4))
-        self.trigger_color_var = tk.StringVar(value="#FF0000")
+        self.trigger_color_var = tk.StringVar(value="#1E1912")
         ttk.Entry(trig_row1, textvariable=self.trigger_color_var, width=10).pack(
             side=tk.LEFT, padx=(0, 6)
         )
         self.trigger_swatch = tk.Canvas(
-            trig_row1, width=20, height=20, bg="#FF0000", highlightthickness=1
+            trig_row1, width=20, height=20, bg="#1E1912", highlightthickness=1
         )
         self.trigger_swatch.pack(side=tk.LEFT, padx=(0, 8))
         self.trigger_color_var.trace_add("write", self._update_trigger_swatch)
 
         ttk.Label(trig_row1, text="Tolerance:").pack(side=tk.LEFT, padx=(0, 4))
-        self.tolerance_var = tk.StringVar(value="30")
+        self.tolerance_var = tk.StringVar(value="1")
         ttk.Entry(trig_row1, textvariable=self.tolerance_var, width=6).pack(
             side=tk.LEFT
         )
@@ -291,7 +291,7 @@ class AutoclickerApp:
             state="readonly",
         ).pack(side=tk.LEFT, padx=(0, 12))
         ttk.Label(trig_row2, text="Delay (ms):").pack(side=tk.LEFT, padx=(0, 4))
-        self.cond_delay_var = tk.StringVar(value="1000")
+        self.cond_delay_var = tk.StringVar(value="300")
         ttk.Entry(trig_row2, textvariable=self.cond_delay_var, width=8).pack(
             side=tk.LEFT
         )
