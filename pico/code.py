@@ -58,6 +58,7 @@ KEY_MAP["right"] = Keycode.RIGHT_ARROW
 BAUD = 115200
 CMD_START = "START"
 CMD_STOP = "STOP"
+CMD_PRESS = "PRESS"
 
 
 def read_serial_line():
@@ -158,7 +159,16 @@ def main():
             if line.upper() == CMD_STOP:
                 continue
 
-            if line.upper().startswith(CMD_START + ";"):
+            if line.upper().startswith(CMD_PRESS + ";"):
+                parts = line.split(";")
+                if len(parts) == 2:
+                    key_name = parts[1].strip().lower()
+                    if key_name in KEY_MAP:
+                        keyboard.press(KEY_MAP[key_name])
+                        time.sleep(0.05)
+                        keyboard.release_all()
+
+            elif line.upper().startswith(CMD_START + ";"):
                 parsed = parse_start(line)
                 if parsed:
                     keys, min_ms, max_ms = parsed

@@ -703,9 +703,7 @@ class AutoclickerApp:
                         "Triggered \u2014 pressing key"
                     ),
                 )
-                self._serial_send(f"START;{key};9999;9999")
-                time.sleep(0.1)
-                self._serial_send("STOP")
+                self._serial_send(f"PRESS;{key}")
                 time.sleep(delay_ms / 1000)
             else:
                 self.root.after(
