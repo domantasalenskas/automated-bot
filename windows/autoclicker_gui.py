@@ -13,6 +13,8 @@ import serial.tools.list_ports
 import threading
 import time
 import random
+import json
+import os
 
 try:
     from PIL import Image, ImageTk
@@ -40,6 +42,7 @@ KEY_OPTIONS = (
 # Raspberry Pi Pico (0x2E8A) and Adafruit/CircuitPython (0x239A) USB VIDs
 PICO_VIDS = (0x2E8A, 0x239A)
 BAUD = 115200
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 
 def find_pico_ports():
@@ -75,6 +78,7 @@ class AutoclickerApp:
 
         self._build_ui()
         self._refresh_ports()
+        self._load_settings()
         self._start_f12_listener()
 
     # ------------------------------------------------------------------ #
@@ -884,6 +888,103 @@ class AutoclickerApp:
         self.root.after(0, lambda: self.monitor_status_var.set("Idle"))
 
     # ------------------------------------------------------------------ #
+    #  Settings persistence                                                #
+    # ------------------------------------------------------------------ #
+
+    def _save_settings(self):
+        data = {
+            "keys": list(self.key_listbox.get(0, tk.END)),
+            "min_delay": self.min_delay_var.get(),
+            "max_delay": self.max_delay_var.get(),
+            "last_port": self.port_var.get(),
+        }
+        if CONDITIONAL_AVAILABLE and hasattr(self, "hp_color_var"):
+            data.update({
+                "region": {
+                    "x": self.region_x_var.get(),
+                    "y": self.region_y_var.get(),
+                    "w": self.region_w_var.get(),
+                    "h": self.region_h_var.get(),
+                },
+                "hp_color": self.hp_color_var.get(),
+                "tolerance": self.tolerance_var.get(),
+                "stuck_timeout": self.stuck_timeout_var.get(),
+                "target_key": self.target_key_var.get(),
+                "target_min": self.target_min_var.get(),
+                "target_max": self.target_max_var.get(),
+                "attack_keys": [
+                    {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
+                    for r in self.attack_key_rows
+                ],
+                "death_enabled": self.death_enabled_var.get(),
+                "death_key": self.death_key_var.get(),
+            })
+        try:
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def _load_settings(self):
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+
+        # -- Autoclicker tab --
+        for key in data.get("keys", []):
+            self.key_listbox.insert(tk.END, key)
+        if "min_delay" in data:
+            self.min_delay_var.set(data["min_delay"])
+        if "max_delay" in data:
+            self.max_delay_var.set(data["max_delay"])
+
+        # -- COM port (select if still available) --
+        saved_port = data.get("last_port", "")
+        if saved_port and saved_port in list(self.port_combo["values"]):
+            self.port_var.set(saved_port)
+
+        # -- Conditional Clicker tab --
+        if not CONDITIONAL_AVAILABLE or not hasattr(self, "hp_color_var"):
+            return
+
+        region = data.get("region", {})
+        if "x" in region:
+            self.region_x_var.set(region["x"])
+        if "y" in region:
+            self.region_y_var.set(region["y"])
+        if "w" in region:
+            self.region_w_var.set(region["w"])
+        if "h" in region:
+            self.region_h_var.set(region["h"])
+
+        if "hp_color" in data:
+            self.hp_color_var.set(data["hp_color"])
+        if "tolerance" in data:
+            self.tolerance_var.set(data["tolerance"])
+        if "stuck_timeout" in data:
+            self.stuck_timeout_var.set(data["stuck_timeout"])
+        if "target_key" in data:
+            self.target_key_var.set(data["target_key"])
+        if "target_min" in data:
+            self.target_min_var.set(data["target_min"])
+        if "target_max" in data:
+            self.target_max_var.set(data["target_max"])
+        if "death_enabled" in data:
+            self.death_enabled_var.set(data["death_enabled"])
+        if "death_key" in data:
+            self.death_key_var.set(data["death_key"])
+
+        saved_attacks = data.get("attack_keys", [])
+        if saved_attacks:
+            for row in list(self.attack_key_rows):
+                row["frame"].destroy()
+            self.attack_key_rows.clear()
+            for ak in saved_attacks:
+                self._add_attack_key_row(ak.get("key", "f1"), ak.get("min", "200"), ak.get("max", "1000"))
+
+    # ------------------------------------------------------------------ #
     #  App lifecycle                                                       #
     # ------------------------------------------------------------------ #
 
@@ -892,6 +993,7 @@ class AutoclickerApp:
         self.root.mainloop()
 
     def _on_close(self):
+        self._save_settings()
         self.preview_active = False
         self.monitoring = False
         if self.running:
