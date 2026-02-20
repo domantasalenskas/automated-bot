@@ -263,31 +263,16 @@ class AutoclickerApp:
 
         trig_row1 = ttk.Frame(trigger_frame)
         trig_row1.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(trig_row1, text="Start color (dead):").pack(
+        ttk.Label(trig_row1, text="HP bar color:").pack(side=tk.LEFT, padx=(0, 4))
+        self.hp_color_var = tk.StringVar(value="#892015")
+        ttk.Entry(trig_row1, textvariable=self.hp_color_var, width=10).pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        self.start_color_var = tk.StringVar(value="#1E1912")
-        ttk.Entry(trig_row1, textvariable=self.start_color_var, width=10).pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.start_swatch = tk.Canvas(
-            trig_row1, width=20, height=20, bg="#1E1912", highlightthickness=1
-        )
-        self.start_swatch.pack(side=tk.LEFT, padx=(0, 12))
-        self.start_color_var.trace_add("write", self._update_start_swatch)
-
-        ttk.Label(trig_row1, text="Stop color (HP):").pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.stop_color_var = tk.StringVar(value="#892015")
-        ttk.Entry(trig_row1, textvariable=self.stop_color_var, width=10).pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.stop_swatch = tk.Canvas(
+        self.hp_swatch = tk.Canvas(
             trig_row1, width=20, height=20, bg="#892015", highlightthickness=1
         )
-        self.stop_swatch.pack(side=tk.LEFT)
-        self.stop_color_var.trace_add("write", self._update_stop_swatch)
+        self.hp_swatch.pack(side=tk.LEFT)
+        self.hp_color_var.trace_add("write", self._update_hp_swatch)
 
         trig_row2 = ttk.Frame(trigger_frame)
         trig_row2.pack(fill=tk.X, pady=(0, 4))
@@ -648,30 +633,16 @@ class AutoclickerApp:
             lbl.pack(side=tk.LEFT)
             lbl.bind(
                 "<Button-1>",
-                lambda _e, c=hex_color: self.start_color_var.set(c),
-            )
-            lbl.bind(
-                "<Button-3>",
-                lambda _e, c=hex_color: self.stop_color_var.set(c),
+                lambda _e, c=hex_color: self.hp_color_var.set(c),
             )
             swatch.bind(
                 "<Button-1>",
-                lambda _e, c=hex_color: self.start_color_var.set(c),
-            )
-            swatch.bind(
-                "<Button-3>",
-                lambda _e, c=hex_color: self.stop_color_var.set(c),
+                lambda _e, c=hex_color: self.hp_color_var.set(c),
             )
 
-    def _update_start_swatch(self, *_args):
+    def _update_hp_swatch(self, *_args):
         try:
-            self.start_swatch.configure(bg=self.start_color_var.get().strip())
-        except tk.TclError:
-            pass
-
-    def _update_stop_swatch(self, *_args):
-        try:
-            self.stop_swatch.configure(bg=self.stop_color_var.get().strip())
+            self.hp_swatch.configure(bg=self.hp_color_var.get().strip())
         except tk.TclError:
             pass
 
@@ -686,15 +657,12 @@ class AutoclickerApp:
         except ValueError:
             messagebox.showwarning("Invalid", "Tolerance must be a number.")
             return
-        for label, var in [("Start", self.start_color_var), ("Stop", self.stop_color_var)]:
-            c = var.get().strip()
-            if not c.startswith("#") or len(c) != 7:
-                messagebox.showwarning(
-                    "Invalid", f"{label} color must be a hex code like #FF0000."
-                )
-                return
-        start_color = self.start_color_var.get().strip()
-        stop_color = self.stop_color_var.get().strip()
+        hp_color = self.hp_color_var.get().strip()
+        if not hp_color.startswith("#") or len(hp_color) != 7:
+            messagebox.showwarning(
+                "Invalid", "HP bar color must be a hex code like #892015."
+            )
+            return
         try:
             min_ms = int(self.cond_min_delay_var.get())
             max_ms = int(self.cond_max_delay_var.get())
@@ -715,11 +683,11 @@ class AutoclickerApp:
         self.monitoring = True
         self.monitor_start_btn.config(state=tk.DISABLED)
         self.monitor_stop_btn.config(state=tk.NORMAL)
-        self.monitor_status_var.set("Waiting for start color...")
+        self.monitor_status_var.set("Monitoring...")
 
         self.monitor_thread = threading.Thread(
             target=self._monitor_loop,
-            args=(self.region, start_color, stop_color, tolerance, key, min_ms, max_ms),
+            args=(self.region, hp_color, tolerance, key, min_ms, max_ms),
             daemon=True,
         )
         self.monitor_thread.start()
@@ -731,19 +699,8 @@ class AutoclickerApp:
         self.monitor_stop_btn.config(state=tk.DISABLED)
         self.monitor_status_var.set("Idle")
 
-    def _monitor_loop(self, region, start_color, stop_color, tolerance, key, min_ms, max_ms):
-        """Background thread with two states:
-
-        WAITING  – poll for *start_color* (monster dead / empty).
-                   When found → switch to PRESSING.
-        PRESSING – press key at random intervals.  After each press
-                   check for *stop_color* (HP bar visible).
-                   If found → monster engaged, switch back to WAITING.
-                   If not   → keep pressing (no monster nearby yet).
-        """
-        STATE_WAITING = 0
-        STATE_PRESSING = 1
-        state = STATE_WAITING
+    def _monitor_loop(self, region, hp_color, tolerance, key, min_ms, max_ms):
+        """Background thread: HP bar visible → idle; HP bar gone → press key."""
         x, y, w, h = region
 
         def _set_status(msg):
@@ -752,31 +709,19 @@ class AutoclickerApp:
         while self.monitoring:
             try:
                 image = capture_region(x, y, w, h)
+                hp_visible = color_present(image, hp_color, tolerance)
             except Exception:
                 time.sleep(0.5)
                 continue
 
-            if state == STATE_WAITING:
-                if color_present(image, start_color, tolerance):
-                    state = STATE_PRESSING
-                    _set_status("Pressing \u2014 looking for target")
-                    self._serial_send(f"PRESS;{key}")
-                    delay = random.uniform(min_ms / 1000, max_ms / 1000)
-                    time.sleep(delay)
-                else:
-                    _set_status("Waiting \u2014 monster alive")
-                    time.sleep(0.2)
-
-            elif state == STATE_PRESSING:
-                if color_present(image, stop_color, tolerance):
-                    state = STATE_WAITING
-                    _set_status("Waiting \u2014 monster alive")
-                    time.sleep(0.2)
-                else:
-                    _set_status("Pressing \u2014 looking for target")
-                    self._serial_send(f"PRESS;{key}")
-                    delay = random.uniform(min_ms / 1000, max_ms / 1000)
-                    time.sleep(delay)
+            if hp_visible:
+                _set_status("Monster alive \u2014 waiting")
+                time.sleep(0.2)
+            else:
+                _set_status("No HP \u2014 pressing key")
+                self._serial_send(f"PRESS;{key}")
+                delay = random.uniform(min_ms / 1000, max_ms / 1000)
+                time.sleep(delay)
 
         self.root.after(0, lambda: self.monitor_status_var.set("Idle"))
 
