@@ -377,6 +377,13 @@ class AutoclickerApp:
             width=10,
             state="readonly",
         ).pack(side=tk.LEFT)
+        ttk.Label(death_frame, text="  Delay after (ms):").pack(
+            side=tk.LEFT, padx=(8, 4)
+        )
+        self.death_delay_var = tk.StringVar(value="1000")
+        ttk.Entry(death_frame, textvariable=self.death_delay_var, width=6).pack(
+            side=tk.LEFT
+        )
 
         # --- Monitor controls ---
         ctrl_frame = ttk.Frame(tab)
@@ -872,10 +879,19 @@ class AutoclickerApp:
             status_effect_keys.append((k, se_min, se_max))
 
         death_key = None
+        death_delay_ms = 0
         if self.death_enabled_var.get():
             death_key = self.death_key_var.get()
             if not death_key:
                 messagebox.showwarning("No key", "Select an on-death key or disable the option.")
+                return
+            try:
+                death_delay_ms = int(self.death_delay_var.get())
+            except ValueError:
+                messagebox.showwarning("Invalid", "Death delay must be a number (ms).")
+                return
+            if death_delay_ms < 0:
+                messagebox.showwarning("Invalid", "Death delay must be >= 0.")
                 return
 
         if not self._open_serial():
@@ -892,7 +908,8 @@ class AutoclickerApp:
                 self.region, hp_color, tolerance, stuck_s,
                 target_key, tgt_min, tgt_max,
                 engage_delay_ms,
-                attack_keys, status_effect_keys, death_key,
+                attack_keys, status_effect_keys,
+                death_key, death_delay_ms,
             ),
             daemon=True,
         )
@@ -909,7 +926,8 @@ class AutoclickerApp:
         self, region, hp_color, tolerance, stuck_s,
         target_key, tgt_min, tgt_max,
         engage_delay_ms,
-        attack_keys, status_effect_keys, death_key,
+        attack_keys, status_effect_keys,
+        death_key, death_delay_ms,
     ):
         """Background thread:
 
@@ -976,7 +994,7 @@ class AutoclickerApp:
                 if prev_hp_visible and death_key:
                     _set_status("Mob dead \u2014 pressing death key")
                     self._serial_send(f"PRESS;{death_key}")
-                    time.sleep(0.1)
+                    time.sleep(death_delay_ms / 1000)
 
                 hp_since = None
                 _set_status("No HP \u2014 targeting")
@@ -1024,6 +1042,7 @@ class AutoclickerApp:
                 ],
                 "death_enabled": self.death_enabled_var.get(),
                 "death_key": self.death_key_var.get(),
+                "death_delay": self.death_delay_var.get(),
             })
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -1083,6 +1102,8 @@ class AutoclickerApp:
             self.death_enabled_var.set(data["death_enabled"])
         if "death_key" in data:
             self.death_key_var.set(data["death_key"])
+        if "death_delay" in data:
+            self.death_delay_var.set(data["death_delay"])
 
         saved_attacks = data.get("attack_keys", [])
         if saved_attacks:
