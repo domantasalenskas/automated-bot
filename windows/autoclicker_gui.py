@@ -1084,6 +1084,7 @@ class AutoclickerApp:
         prev_hp_visible = False
         stuck_count = 0
         baseline_px = None
+        last_px_count = None
         last_px_check = 0.0
 
         PX_CHECK_INTERVAL = 0.5
@@ -1125,7 +1126,10 @@ class AutoclickerApp:
 
                 if now - last_px_check >= PX_CHECK_INTERVAL:
                     current_px = count_color_pixels(image, hp_color, tolerance)
-                    if current_px <= baseline_px - hp_drop_threshold:
+                    last_px_count = current_px
+                    if baseline_px is None:
+                        baseline_px = current_px
+                    elif current_px <= baseline_px - hp_drop_threshold:
                         hp_since = now
                         baseline_px = current_px
                     last_px_check = now
@@ -1148,7 +1152,10 @@ class AutoclickerApp:
                     time.sleep(delay)
                 else:
                     keys_desc = ", ".join(k for k, _, _ in attack_keys)
-                    px_info = f" [HP: {baseline_px}px]" if baseline_px is not None else ""
+                    if last_px_count is not None and baseline_px is not None:
+                        px_info = f" [HP: {last_px_count}px / base: {baseline_px}px]"
+                    else:
+                        px_info = ""
                     _set_status(f"Attacking [{keys_desc}] ({int(elapsed)}s){px_info}")
                     for i, (key, a_min, a_max) in enumerate(attack_keys):
                         if now >= next_press[i]:
