@@ -68,3 +68,22 @@ def color_present(image, hex_color, tolerance=30):
         if dr * dr + dg * dg + db * db <= tol_sq:
             return True
     return False
+
+
+def count_color_pixels(image, hex_color, tolerance=30):
+    """Return the number of pixels matching *hex_color* within Euclidean RGB *tolerance*."""
+    hex_color = hex_color.lstrip("#")
+    tr = int(hex_color[0:2], 16)
+    tg = int(hex_color[2:4], 16)
+    tb = int(hex_color[4:6], 16)
+    tol_sq = tolerance * tolerance
+    count = 0
+
+    for pixel in image.getdata():
+        r, g, b = pixel[:3]
+        dr = r - tr
+        dg = g - tg
+        db = b - tb
+        if dr * dr + dg * dg + db * db <= tol_sq:
+            count += 1
+    return count

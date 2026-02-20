@@ -18,7 +18,7 @@ import os
 
 try:
     from PIL import Image, ImageTk
-    from screen_reader import capture_region, get_unique_colors, color_present
+    from screen_reader import capture_region, get_unique_colors, color_present, count_color_pixels
     from region_selector import RegionSelector
 
     CONDITIONAL_AVAILABLE = True
@@ -290,6 +290,13 @@ class AutoclickerApp:
         )
         self.stuck_timeout_var = tk.StringVar(value="20")
         ttk.Entry(trig_row2, textvariable=self.stuck_timeout_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(trig_row2, text="HP drop threshold (px):").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.hp_drop_threshold_var = tk.StringVar(value="100")
+        ttk.Entry(trig_row2, textvariable=self.hp_drop_threshold_var, width=6).pack(
             side=tk.LEFT
         )
 
@@ -890,6 +897,14 @@ class AutoclickerApp:
         if stuck_s <= 0:
             messagebox.showwarning("Invalid", "Stuck timeout must be > 0.")
             return
+        try:
+            hp_drop_threshold = int(self.hp_drop_threshold_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "HP drop threshold must be a number (px).")
+            return
+        if hp_drop_threshold < 0:
+            messagebox.showwarning("Invalid", "HP drop threshold must be >= 0.")
+            return
         unstuck_key1 = self.unstuck_key1_var.get()
         unstuck_key2 = self.unstuck_key2_var.get()
         if not unstuck_key1 or not unstuck_key2:
@@ -1020,6 +1035,7 @@ class AutoclickerApp:
             target=self._monitor_loop,
             args=(
                 self.region, hp_color, tolerance, stuck_s,
+                hp_drop_threshold,
                 target_key, tgt_min, tgt_max,
                 engage_delay_ms,
                 attack_keys, status_effect_keys,
@@ -1040,6 +1056,7 @@ class AutoclickerApp:
 
     def _monitor_loop(
         self, region, hp_color, tolerance, stuck_s,
+        hp_drop_threshold,
         target_key, tgt_min, tgt_max,
         engage_delay_ms,
         attack_keys, status_effect_keys,
@@ -1055,7 +1072,9 @@ class AutoclickerApp:
         HP visible      → press each attack key on its own independent timer
         Status effects  → screen-read each effect's region; if color missing,
                           re-apply at retry interval; once applied, never retry
-        HP visible 20s+ → press *target_key* (stuck, re-target)
+        HP not dropping → every 500ms count HP pixels; if count hasn't dropped
+                          by more than hp_drop_threshold for stuck_s seconds,
+                          press *target_key* (stuck, re-target)
         Stuck 2x in row → movement sequence (hold keys) then re-target
         HP was visible → now gone  → press *death_key* once (if enabled)
         """
@@ -1064,6 +1083,10 @@ class AutoclickerApp:
         hp_since = None
         prev_hp_visible = False
         stuck_count = 0
+        baseline_px = None
+        last_px_check = 0.0
+
+        PX_CHECK_INTERVAL = 0.5
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
@@ -1090,6 +1113,8 @@ class AutoclickerApp:
                 if hp_since is None:
                     hp_since = now
                     next_press = [now + engage_s] * len(attack_keys)
+                    baseline_px = count_color_pixels(image, hp_color, tolerance)
+                    last_px_check = now
 
                     se_applied = [False] * len(status_effect_keys)
                     for i, se in enumerate(status_effect_keys):
@@ -1097,6 +1122,13 @@ class AutoclickerApp:
                         next_se_check[i] = now + random.uniform(
                             se["retry_min"] / 1000, se["retry_max"] / 1000
                         )
+
+                if now - last_px_check >= PX_CHECK_INTERVAL:
+                    current_px = count_color_pixels(image, hp_color, tolerance)
+                    if current_px <= baseline_px - hp_drop_threshold:
+                        hp_since = now
+                        baseline_px = current_px
+                    last_px_check = now
 
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
@@ -1111,11 +1143,13 @@ class AutoclickerApp:
                         _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
                     self._serial_send(f"PRESS;{target_key}")
                     hp_since = time.monotonic()
+                    baseline_px = None
                     delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                     time.sleep(delay)
                 else:
                     keys_desc = ", ".join(k for k, _, _ in attack_keys)
-                    _set_status(f"Attacking [{keys_desc}] ({int(elapsed)}s)")
+                    px_info = f" [HP: {baseline_px}px]" if baseline_px is not None else ""
+                    _set_status(f"Attacking [{keys_desc}] ({int(elapsed)}s){px_info}")
                     for i, (key, a_min, a_max) in enumerate(attack_keys):
                         if now >= next_press[i]:
                             self._serial_send(f"PRESS;{key}")
@@ -1145,6 +1179,7 @@ class AutoclickerApp:
                     time.sleep(death_delay_ms / 1000)
 
                 hp_since = None
+                baseline_px = None
                 stuck_count = 0
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
@@ -1177,6 +1212,7 @@ class AutoclickerApp:
                 "hp_color": self.hp_color_var.get(),
                 "tolerance": self.tolerance_var.get(),
                 "stuck_timeout": self.stuck_timeout_var.get(),
+                "hp_drop_threshold": self.hp_drop_threshold_var.get(),
                 "unstuck_key1": self.unstuck_key1_var.get(),
                 "unstuck_dur1": self.unstuck_dur1_var.get(),
                 "unstuck_key2": self.unstuck_key2_var.get(),
@@ -1249,6 +1285,8 @@ class AutoclickerApp:
             self.tolerance_var.set(data["tolerance"])
         if "stuck_timeout" in data:
             self.stuck_timeout_var.set(data["stuck_timeout"])
+        if "hp_drop_threshold" in data:
+            self.hp_drop_threshold_var.set(data["hp_drop_threshold"])
         if "unstuck_key1" in data:
             self.unstuck_key1_var.set(data["unstuck_key1"])
         if "unstuck_dur1" in data:
