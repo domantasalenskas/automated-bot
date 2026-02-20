@@ -333,6 +333,19 @@ class AutoclickerApp:
             attack_frame, text="+ Add Attack Key", command=self._add_attack_key_row
         ).pack(anchor=tk.W, pady=(4, 0))
 
+        # Status effect keys (pressed immediately on target, then re-applied)
+        status_frame = ttk.LabelFrame(trigger_frame, text="Status Effect Keys", padding=4)
+        status_frame.pack(fill=tk.X, pady=(4, 0))
+
+        self.status_effect_keys_container = ttk.Frame(status_frame)
+        self.status_effect_keys_container.pack(fill=tk.X)
+
+        self.status_effect_key_rows = []
+
+        ttk.Button(
+            status_frame, text="+ Add Status Effect Key", command=self._add_status_effect_key_row
+        ).pack(anchor=tk.W, pady=(4, 0))
+
         # On-death key (pressed once when mob dies)
         death_frame = ttk.Frame(trigger_frame)
         death_frame.pack(fill=tk.X, pady=(6, 0))
@@ -724,6 +737,39 @@ class AutoclickerApp:
 
         ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
 
+    # -- status effect key rows --
+
+    def _add_status_effect_key_row(self, key="f1", min_ms="3000", max_ms="5000"):
+        row_frame = ttk.Frame(self.status_effect_keys_container)
+        row_frame.pack(fill=tk.X, pady=1)
+
+        key_var = tk.StringVar(value=key)
+        min_var = tk.StringVar(value=min_ms)
+        max_var = tk.StringVar(value=max_ms)
+
+        ttk.Label(row_frame, text="Key:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Combobox(
+            row_frame, textvariable=key_var, values=KEY_OPTIONS,
+            width=8, state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row_frame, text="Re-apply Min (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=min_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Label(row_frame, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=max_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+
+        entry = {"frame": row_frame, "key": key_var, "min": min_var, "max": max_var}
+        self.status_effect_key_rows.append(entry)
+
+        def _remove(e=entry):
+            e["frame"].destroy()
+            self.status_effect_key_rows.remove(e)
+
+        ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
+
     # -- monitoring --
 
     def _start_monitoring(self):
@@ -784,6 +830,23 @@ class AutoclickerApp:
             messagebox.showwarning("No keys", "Add at least one attack key.")
             return
 
+        status_effect_keys = []
+        for row in self.status_effect_key_rows:
+            k = row["key"].get()
+            if not k:
+                messagebox.showwarning("No key", "All status effect key slots must have a key selected.")
+                return
+            try:
+                se_min = int(row["min"].get())
+                se_max = int(row["max"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Status effect key '{k}': delay values must be numbers (ms).")
+                return
+            if se_min <= 0 or se_max < se_min:
+                messagebox.showwarning("Invalid", f"Status effect key '{k}': min > 0 and max >= min.")
+                return
+            status_effect_keys.append((k, se_min, se_max))
+
         death_key = None
         if self.death_enabled_var.get():
             death_key = self.death_key_var.get()
@@ -804,7 +867,7 @@ class AutoclickerApp:
             args=(
                 self.region, hp_color, tolerance, stuck_s,
                 target_key, tgt_min, tgt_max,
-                attack_keys, death_key,
+                attack_keys, status_effect_keys, death_key,
             ),
             daemon=True,
         )
@@ -820,11 +883,12 @@ class AutoclickerApp:
     def _monitor_loop(
         self, region, hp_color, tolerance, stuck_s,
         target_key, tgt_min, tgt_max,
-        attack_keys, death_key,
+        attack_keys, status_effect_keys, death_key,
     ):
         """Background thread:
 
         HP gone         → press *target_key* (find next monster)
+        HP visible (new)→ press status-effect keys immediately, then on timer
         HP visible      → press each attack key on its own independent timer
         HP visible 20s+ → press *target_key* (stuck, re-target)
         HP was visible → now gone  → press *death_key* once (if enabled)
@@ -835,6 +899,7 @@ class AutoclickerApp:
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
+        next_se_press = [now] * len(status_effect_keys)
 
         POLL_INTERVAL = 0.05
 
@@ -856,6 +921,10 @@ class AutoclickerApp:
                     hp_since = now
                     next_press = [now] * len(attack_keys)
 
+                    for i, (key, se_min, se_max) in enumerate(status_effect_keys):
+                        self._serial_send(f"PRESS;{key}")
+                        next_se_press[i] = now + random.uniform(se_min / 1000, se_max / 1000)
+
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
                     _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
@@ -870,6 +939,10 @@ class AutoclickerApp:
                         if now >= next_press[i]:
                             self._serial_send(f"PRESS;{key}")
                             next_press[i] = now + random.uniform(a_min / 1000, a_max / 1000)
+                    for i, (key, se_min, se_max) in enumerate(status_effect_keys):
+                        if now >= next_se_press[i]:
+                            self._serial_send(f"PRESS;{key}")
+                            next_se_press[i] = now + random.uniform(se_min / 1000, se_max / 1000)
                     time.sleep(POLL_INTERVAL)
             else:
                 if prev_hp_visible and death_key:
@@ -915,6 +988,10 @@ class AutoclickerApp:
                 "attack_keys": [
                     {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
                     for r in self.attack_key_rows
+                ],
+                "status_effect_keys": [
+                    {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
+                    for r in self.status_effect_key_rows
                 ],
                 "death_enabled": self.death_enabled_var.get(),
                 "death_key": self.death_key_var.get(),
@@ -983,6 +1060,14 @@ class AutoclickerApp:
             self.attack_key_rows.clear()
             for ak in saved_attacks:
                 self._add_attack_key_row(ak.get("key", "f1"), ak.get("min", "200"), ak.get("max", "1000"))
+
+        saved_status_effects = data.get("status_effect_keys", [])
+        if saved_status_effects:
+            for row in list(self.status_effect_key_rows):
+                row["frame"].destroy()
+            self.status_effect_key_rows.clear()
+            for se in saved_status_effects:
+                self._add_status_effect_key_row(se.get("key", "f1"), se.get("min", "3000"), se.get("max", "5000"))
 
     # ------------------------------------------------------------------ #
     #  App lifecycle                                                       #
