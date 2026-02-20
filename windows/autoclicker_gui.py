@@ -1131,7 +1131,6 @@ class AutoclickerApp:
                         baseline_px = current_px
                     elif current_px <= baseline_px - hp_drop_threshold:
                         hp_since = now
-                        baseline_px = current_px
                     last_px_check = now
 
                 elapsed = now - hp_since
