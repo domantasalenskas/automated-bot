@@ -318,6 +318,21 @@ class AutoclickerApp:
             side=tk.LEFT
         )
 
+        # Attack start delay (wait after targeting before attacks begin)
+        engage_row = ttk.Frame(trigger_frame)
+        engage_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(engage_row, text="Attack start delay (ms):").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.engage_delay_var = tk.StringVar(value="2500")
+        ttk.Entry(engage_row, textvariable=self.engage_delay_var, width=8).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(
+            engage_row, text="  (time to run to mob / cast status effects)",
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
         # Attack keys (pressed while monster is targeted) – dynamic list
         attack_frame = ttk.LabelFrame(trigger_frame, text="Attack Keys", padding=4)
         attack_frame.pack(fill=tk.X, pady=(4, 0))
@@ -809,6 +824,15 @@ class AutoclickerApp:
             messagebox.showwarning("Invalid", "Targeting: min > 0 and max >= min.")
             return
 
+        try:
+            engage_delay_ms = int(self.engage_delay_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Attack start delay must be a number (ms).")
+            return
+        if engage_delay_ms < 0:
+            messagebox.showwarning("Invalid", "Attack start delay must be >= 0.")
+            return
+
         attack_keys = []
         for row in self.attack_key_rows:
             k = row["key"].get()
@@ -867,6 +891,7 @@ class AutoclickerApp:
             args=(
                 self.region, hp_color, tolerance, stuck_s,
                 target_key, tgt_min, tgt_max,
+                engage_delay_ms,
                 attack_keys, status_effect_keys, death_key,
             ),
             daemon=True,
@@ -883,17 +908,20 @@ class AutoclickerApp:
     def _monitor_loop(
         self, region, hp_color, tolerance, stuck_s,
         target_key, tgt_min, tgt_max,
+        engage_delay_ms,
         attack_keys, status_effect_keys, death_key,
     ):
         """Background thread:
 
         HP gone         → press *target_key* (find next monster)
-        HP visible (new)→ press status-effect keys immediately, then on timer
+        HP visible (new)→ press status-effect keys immediately;
+                          attacks delayed by engage_delay_ms
         HP visible      → press each attack key on its own independent timer
         HP visible 20s+ → press *target_key* (stuck, re-target)
         HP was visible → now gone  → press *death_key* once (if enabled)
         """
         x, y, w, h = region
+        engage_s = engage_delay_ms / 1000
         hp_since = None
         prev_hp_visible = False
 
@@ -919,7 +947,7 @@ class AutoclickerApp:
             if hp_visible:
                 if hp_since is None:
                     hp_since = now
-                    next_press = [now] * len(attack_keys)
+                    next_press = [now + engage_s] * len(attack_keys)
 
                     for i, (key, se_min, se_max) in enumerate(status_effect_keys):
                         self._serial_send(f"PRESS;{key}")
@@ -985,6 +1013,7 @@ class AutoclickerApp:
                 "target_key": self.target_key_var.get(),
                 "target_min": self.target_min_var.get(),
                 "target_max": self.target_max_var.get(),
+                "engage_delay": self.engage_delay_var.get(),
                 "attack_keys": [
                     {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
                     for r in self.attack_key_rows
@@ -1048,6 +1077,8 @@ class AutoclickerApp:
             self.target_min_var.set(data["target_min"])
         if "target_max" in data:
             self.target_max_var.set(data["target_max"])
+        if "engage_delay" in data:
+            self.engage_delay_var.set(data["engage_delay"])
         if "death_enabled" in data:
             self.death_enabled_var.set(data["death_enabled"])
         if "death_key" in data:
