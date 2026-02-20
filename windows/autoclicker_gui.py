@@ -314,30 +314,37 @@ class AutoclickerApp:
             side=tk.LEFT
         )
 
-        # Attack key (pressed while monster is targeted)
-        attack_row = ttk.Frame(trigger_frame)
-        attack_row.pack(fill=tk.X)
-        ttk.Label(attack_row, text="Attack key:").pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.attack_key_var = tk.StringVar(value="f1")
+        # Attack keys (pressed while monster is targeted) – dynamic list
+        attack_frame = ttk.LabelFrame(trigger_frame, text="Attack Keys", padding=4)
+        attack_frame.pack(fill=tk.X, pady=(4, 0))
+
+        self.attack_keys_container = ttk.Frame(attack_frame)
+        self.attack_keys_container.pack(fill=tk.X)
+
+        self.attack_key_rows = []
+        self._add_attack_key_row("f1", "200", "1000")
+        self._add_attack_key_row("f2", "200", "1000")
+
+        ttk.Button(
+            attack_frame, text="+ Add Attack Key", command=self._add_attack_key_row
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        # On-death key (pressed once when mob dies)
+        death_frame = ttk.Frame(trigger_frame)
+        death_frame.pack(fill=tk.X, pady=(6, 0))
+        self.death_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            death_frame, text="On mob death, press:",
+            variable=self.death_enabled_var,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+        self.death_key_var = tk.StringVar(value="f3")
         ttk.Combobox(
-            attack_row,
-            textvariable=self.attack_key_var,
+            death_frame,
+            textvariable=self.death_key_var,
             values=KEY_OPTIONS,
             width=10,
             state="readonly",
-        ).pack(side=tk.LEFT, padx=(0, 12))
-        ttk.Label(attack_row, text="Min (ms):").pack(side=tk.LEFT, padx=(0, 4))
-        self.attack_min_var = tk.StringVar(value="200")
-        ttk.Entry(attack_row, textvariable=self.attack_min_var, width=6).pack(
-            side=tk.LEFT, padx=(0, 12)
-        )
-        ttk.Label(attack_row, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 4))
-        self.attack_max_var = tk.StringVar(value="1000")
-        ttk.Entry(attack_row, textvariable=self.attack_max_var, width=6).pack(
-            side=tk.LEFT
-        )
+        ).pack(side=tk.LEFT)
 
         # --- Monitor controls ---
         ctrl_frame = ttk.Frame(tab)
@@ -677,6 +684,42 @@ class AutoclickerApp:
         except tk.TclError:
             pass
 
+    # -- attack key rows --
+
+    def _add_attack_key_row(self, key="f1", min_ms="200", max_ms="1000"):
+        row_frame = ttk.Frame(self.attack_keys_container)
+        row_frame.pack(fill=tk.X, pady=1)
+
+        key_var = tk.StringVar(value=key)
+        min_var = tk.StringVar(value=min_ms)
+        max_var = tk.StringVar(value=max_ms)
+
+        ttk.Label(row_frame, text="Key:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Combobox(
+            row_frame, textvariable=key_var, values=KEY_OPTIONS,
+            width=8, state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row_frame, text="Min (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=min_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Label(row_frame, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=max_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+
+        entry = {"frame": row_frame, "key": key_var, "min": min_var, "max": max_var}
+        self.attack_key_rows.append(entry)
+
+        def _remove(e=entry):
+            if len(self.attack_key_rows) <= 1:
+                messagebox.showinfo("Cannot remove", "At least one attack key is required.")
+                return
+            e["frame"].destroy()
+            self.attack_key_rows.remove(e)
+
+        ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
+
     # -- monitoring --
 
     def _start_monitoring(self):
@@ -703,21 +746,46 @@ class AutoclickerApp:
             messagebox.showwarning("Invalid", "Stuck timeout must be > 0.")
             return
         target_key = self.target_key_var.get()
-        attack_key = self.attack_key_var.get()
-        if not target_key or not attack_key:
-            messagebox.showwarning("No key", "Select both targeting and attack keys.")
+        if not target_key:
+            messagebox.showwarning("No key", "Select a targeting key.")
             return
         try:
             tgt_min = int(self.target_min_var.get())
             tgt_max = int(self.target_max_var.get())
-            atk_min = int(self.attack_min_var.get())
-            atk_max = int(self.attack_max_var.get())
         except ValueError:
-            messagebox.showwarning("Invalid", "All delay values must be numbers (ms).")
+            messagebox.showwarning("Invalid", "Targeting delay values must be numbers (ms).")
             return
-        if tgt_min <= 0 or tgt_max < tgt_min or atk_min <= 0 or atk_max < atk_min:
-            messagebox.showwarning("Invalid", "Min delay > 0 and max >= min.")
+        if tgt_min <= 0 or tgt_max < tgt_min:
+            messagebox.showwarning("Invalid", "Targeting: min > 0 and max >= min.")
             return
+
+        attack_keys = []
+        for row in self.attack_key_rows:
+            k = row["key"].get()
+            if not k:
+                messagebox.showwarning("No key", "All attack key slots must have a key selected.")
+                return
+            try:
+                a_min = int(row["min"].get())
+                a_max = int(row["max"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Attack key '{k}': delay values must be numbers (ms).")
+                return
+            if a_min <= 0 or a_max < a_min:
+                messagebox.showwarning("Invalid", f"Attack key '{k}': min > 0 and max >= min.")
+                return
+            attack_keys.append((k, a_min, a_max))
+
+        if not attack_keys:
+            messagebox.showwarning("No keys", "Add at least one attack key.")
+            return
+
+        death_key = None
+        if self.death_enabled_var.get():
+            death_key = self.death_key_var.get()
+            if not death_key:
+                messagebox.showwarning("No key", "Select an on-death key or disable the option.")
+                return
 
         if not self._open_serial():
             return
@@ -732,7 +800,7 @@ class AutoclickerApp:
             args=(
                 self.region, hp_color, tolerance, stuck_s,
                 target_key, tgt_min, tgt_max,
-                attack_key, atk_min, atk_max,
+                attack_keys, death_key,
             ),
             daemon=True,
         )
@@ -748,16 +816,23 @@ class AutoclickerApp:
     def _monitor_loop(
         self, region, hp_color, tolerance, stuck_s,
         target_key, tgt_min, tgt_max,
-        attack_key, atk_min, atk_max,
+        attack_keys, death_key,
     ):
         """Background thread:
 
         HP gone         → press *target_key* (find next monster)
-        HP visible      → press *attack_key* (attack current monster)
+        HP visible      → press each attack key on its own independent timer
         HP visible 20s+ → press *target_key* (stuck, re-target)
+        HP was visible → now gone  → press *death_key* once (if enabled)
         """
         x, y, w, h = region
         hp_since = None
+        prev_hp_visible = False
+
+        now = time.monotonic()
+        next_press = [now] * len(attack_keys)
+
+        POLL_INTERVAL = 0.05
 
         def _set_status(msg):
             self.root.after(0, lambda m=msg: self.monitor_status_var.set(m))
@@ -770,10 +845,13 @@ class AutoclickerApp:
                 time.sleep(0.5)
                 continue
 
+            now = time.monotonic()
+
             if hp_visible:
-                now = time.monotonic()
                 if hp_since is None:
                     hp_since = now
+                    next_press = [now] * len(attack_keys)
+
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
                     _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
@@ -782,16 +860,26 @@ class AutoclickerApp:
                     delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                     time.sleep(delay)
                 else:
-                    _set_status(f"Attacking ({int(elapsed)}s)")
-                    self._serial_send(f"PRESS;{attack_key}")
-                    delay = random.uniform(atk_min / 1000, atk_max / 1000)
-                    time.sleep(delay)
+                    keys_desc = ", ".join(k for k, _, _ in attack_keys)
+                    _set_status(f"Attacking [{keys_desc}] ({int(elapsed)}s)")
+                    for i, (key, a_min, a_max) in enumerate(attack_keys):
+                        if now >= next_press[i]:
+                            self._serial_send(f"PRESS;{key}")
+                            next_press[i] = now + random.uniform(a_min / 1000, a_max / 1000)
+                    time.sleep(POLL_INTERVAL)
             else:
+                if prev_hp_visible and death_key:
+                    _set_status("Mob dead \u2014 pressing death key")
+                    self._serial_send(f"PRESS;{death_key}")
+                    time.sleep(0.1)
+
                 hp_since = None
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
                 delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                 time.sleep(delay)
+
+            prev_hp_visible = hp_visible
 
         self.root.after(0, lambda: self.monitor_status_var.set("Idle"))
 
