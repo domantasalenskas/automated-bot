@@ -281,37 +281,61 @@ class AutoclickerApp:
         ttk.Entry(trig_row2, textvariable=self.tolerance_var, width=6).pack(
             side=tk.LEFT, padx=(0, 12)
         )
-        ttk.Label(trig_row2, text="Key to press:").pack(side=tk.LEFT, padx=(0, 4))
-        self.cond_key_var = tk.StringVar(value="f4")
-        ttk.Combobox(
-            trig_row2,
-            textvariable=self.cond_key_var,
-            values=KEY_OPTIONS,
-            width=10,
-            state="readonly",
-        ).pack(side=tk.LEFT)
-
-        trig_row3 = ttk.Frame(trigger_frame)
-        trig_row3.pack(fill=tk.X)
-        ttk.Label(trig_row3, text="Min delay (ms):").pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.cond_min_delay_var = tk.StringVar(value="200")
-        ttk.Entry(trig_row3, textvariable=self.cond_min_delay_var, width=8).pack(
-            side=tk.LEFT, padx=(0, 12)
-        )
-        ttk.Label(trig_row3, text="Max delay (ms):").pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.cond_max_delay_var = tk.StringVar(value="400")
-        ttk.Entry(trig_row3, textvariable=self.cond_max_delay_var, width=8).pack(
-            side=tk.LEFT, padx=(0, 12)
-        )
-        ttk.Label(trig_row3, text="Stuck timeout (s):").pack(
+        ttk.Label(trig_row2, text="Stuck timeout (s):").pack(
             side=tk.LEFT, padx=(0, 4)
         )
         self.stuck_timeout_var = tk.StringVar(value="20")
-        ttk.Entry(trig_row3, textvariable=self.stuck_timeout_var, width=6).pack(
+        ttk.Entry(trig_row2, textvariable=self.stuck_timeout_var, width=6).pack(
+            side=tk.LEFT
+        )
+
+        # Targeting key (pressed when no HP / stuck)
+        target_row = ttk.Frame(trigger_frame)
+        target_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(target_row, text="Targeting key:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.target_key_var = tk.StringVar(value="f4")
+        ttk.Combobox(
+            target_row,
+            textvariable=self.target_key_var,
+            values=KEY_OPTIONS,
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(target_row, text="Min (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.target_min_var = tk.StringVar(value="200")
+        ttk.Entry(target_row, textvariable=self.target_min_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(target_row, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.target_max_var = tk.StringVar(value="400")
+        ttk.Entry(target_row, textvariable=self.target_max_var, width=6).pack(
+            side=tk.LEFT
+        )
+
+        # Attack key (pressed while monster is targeted)
+        attack_row = ttk.Frame(trigger_frame)
+        attack_row.pack(fill=tk.X)
+        ttk.Label(attack_row, text="Attack key:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.attack_key_var = tk.StringVar(value="f1")
+        ttk.Combobox(
+            attack_row,
+            textvariable=self.attack_key_var,
+            values=KEY_OPTIONS,
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(attack_row, text="Min (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.attack_min_var = tk.StringVar(value="200")
+        ttk.Entry(attack_row, textvariable=self.attack_min_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(attack_row, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.attack_max_var = tk.StringVar(value="1000")
+        ttk.Entry(attack_row, textvariable=self.attack_max_var, width=6).pack(
             side=tk.LEFT
         )
 
@@ -671,15 +695,6 @@ class AutoclickerApp:
             )
             return
         try:
-            min_ms = int(self.cond_min_delay_var.get())
-            max_ms = int(self.cond_max_delay_var.get())
-        except ValueError:
-            messagebox.showwarning("Invalid", "Min/max delay must be numbers (ms).")
-            return
-        if min_ms <= 0 or max_ms < min_ms:
-            messagebox.showwarning("Invalid", "Min delay > 0 and max >= min.")
-            return
-        try:
             stuck_s = float(self.stuck_timeout_var.get())
         except ValueError:
             messagebox.showwarning("Invalid", "Stuck timeout must be a number (s).")
@@ -687,9 +702,21 @@ class AutoclickerApp:
         if stuck_s <= 0:
             messagebox.showwarning("Invalid", "Stuck timeout must be > 0.")
             return
-        key = self.cond_key_var.get()
-        if not key:
-            messagebox.showwarning("No key", "Select a key to press.")
+        target_key = self.target_key_var.get()
+        attack_key = self.attack_key_var.get()
+        if not target_key or not attack_key:
+            messagebox.showwarning("No key", "Select both targeting and attack keys.")
+            return
+        try:
+            tgt_min = int(self.target_min_var.get())
+            tgt_max = int(self.target_max_var.get())
+            atk_min = int(self.attack_min_var.get())
+            atk_max = int(self.attack_max_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "All delay values must be numbers (ms).")
+            return
+        if tgt_min <= 0 or tgt_max < tgt_min or atk_min <= 0 or atk_max < atk_min:
+            messagebox.showwarning("Invalid", "Min delay > 0 and max >= min.")
             return
 
         if not self._open_serial():
@@ -702,7 +729,11 @@ class AutoclickerApp:
 
         self.monitor_thread = threading.Thread(
             target=self._monitor_loop,
-            args=(self.region, hp_color, tolerance, key, min_ms, max_ms, stuck_s),
+            args=(
+                self.region, hp_color, tolerance, stuck_s,
+                target_key, tgt_min, tgt_max,
+                attack_key, atk_min, atk_max,
+            ),
             daemon=True,
         )
         self.monitor_thread.start()
@@ -714,11 +745,16 @@ class AutoclickerApp:
         self.monitor_stop_btn.config(state=tk.DISABLED)
         self.monitor_status_var.set("Idle")
 
-    def _monitor_loop(self, region, hp_color, tolerance, key, min_ms, max_ms, stuck_s):
-        """Background thread: HP bar visible → idle; HP bar gone → press key.
+    def _monitor_loop(
+        self, region, hp_color, tolerance, stuck_s,
+        target_key, tgt_min, tgt_max,
+        attack_key, atk_min, atk_max,
+    ):
+        """Background thread:
 
-        If the HP bar stays visible for longer than *stuck_s* seconds the
-        player is assumed stuck and the key is pressed to unstick.
+        HP gone         → press *target_key* (find next monster)
+        HP visible      → press *attack_key* (attack current monster)
+        HP visible 20s+ → press *target_key* (stuck, re-target)
         """
         x, y, w, h = region
         hp_since = None
@@ -740,19 +776,21 @@ class AutoclickerApp:
                     hp_since = now
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
-                    _set_status(f"Stuck ({int(elapsed)}s) \u2014 pressing key")
-                    self._serial_send(f"PRESS;{key}")
+                    _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
+                    self._serial_send(f"PRESS;{target_key}")
                     hp_since = time.monotonic()
-                    delay = random.uniform(min_ms / 1000, max_ms / 1000)
+                    delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                     time.sleep(delay)
                 else:
-                    _set_status(f"Monster alive \u2014 waiting ({int(elapsed)}s)")
-                    time.sleep(0.2)
+                    _set_status(f"Attacking ({int(elapsed)}s)")
+                    self._serial_send(f"PRESS;{attack_key}")
+                    delay = random.uniform(atk_min / 1000, atk_max / 1000)
+                    time.sleep(delay)
             else:
                 hp_since = None
-                _set_status("No HP \u2014 pressing key")
-                self._serial_send(f"PRESS;{key}")
-                delay = random.uniform(min_ms / 1000, max_ms / 1000)
+                _set_status("No HP \u2014 targeting")
+                self._serial_send(f"PRESS;{target_key}")
+                delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                 time.sleep(delay)
 
         self.root.after(0, lambda: self.monitor_status_var.set("Idle"))
