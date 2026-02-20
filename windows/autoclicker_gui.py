@@ -761,36 +761,75 @@ class AutoclickerApp:
 
     # -- status effect key rows --
 
-    def _add_status_effect_key_row(self, key="f1", min_ms="3000", max_ms="5000"):
-        row_frame = ttk.Frame(self.status_effect_keys_container)
-        row_frame.pack(fill=tk.X, pady=1)
+    def _add_status_effect_key_row(
+        self, key="f1", region_x="0", region_y="0", region_w="50", region_h="50",
+        color="#FFFFFF", tolerance="30", retry_min="1000", retry_max="2000",
+    ):
+        outer_frame = ttk.Frame(self.status_effect_keys_container)
+        outer_frame.pack(fill=tk.X, pady=(2, 4))
 
         key_var = tk.StringVar(value=key)
-        min_var = tk.StringVar(value=min_ms)
-        max_var = tk.StringVar(value=max_ms)
+        rx_var = tk.StringVar(value=region_x)
+        ry_var = tk.StringVar(value=region_y)
+        rw_var = tk.StringVar(value=region_w)
+        rh_var = tk.StringVar(value=region_h)
+        color_var = tk.StringVar(value=color)
+        tol_var = tk.StringVar(value=tolerance)
+        retry_min_var = tk.StringVar(value=retry_min)
+        retry_max_var = tk.StringVar(value=retry_max)
 
-        ttk.Label(row_frame, text="Key:").pack(side=tk.LEFT, padx=(0, 2))
+        row1 = ttk.Frame(outer_frame)
+        row1.pack(fill=tk.X)
+        ttk.Label(row1, text="Key:").pack(side=tk.LEFT, padx=(0, 2))
         ttk.Combobox(
-            row_frame, textvariable=key_var, values=KEY_OPTIONS,
+            row1, textvariable=key_var, values=KEY_OPTIONS,
             width=8, state="readonly",
         ).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Label(row_frame, text="Re-apply Min (ms):").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row_frame, textvariable=min_var, width=6).pack(
-            side=tk.LEFT, padx=(0, 8)
-        )
-        ttk.Label(row_frame, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row_frame, textvariable=max_var, width=6).pack(
-            side=tk.LEFT, padx=(0, 8)
-        )
+        for label, var in [
+            ("X:", rx_var), ("Y:", ry_var), ("W:", rw_var), ("H:", rh_var),
+        ]:
+            ttk.Label(row1, text=label).pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Entry(row1, textvariable=var, width=5).pack(side=tk.LEFT, padx=(0, 4))
 
-        entry = {"frame": row_frame, "key": key_var, "min": min_var, "max": max_var}
+        def _remove(e_ref=[None]):
+            e_ref[0]["frame"].destroy()
+            self.status_effect_key_rows.remove(e_ref[0])
+
+        ttk.Button(row1, text="✕", width=3, command=_remove).pack(side=tk.RIGHT)
+
+        row2 = ttk.Frame(outer_frame)
+        row2.pack(fill=tk.X, pady=(2, 0))
+        ttk.Label(row2, text="Color:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row2, textvariable=color_var, width=8).pack(side=tk.LEFT, padx=(0, 4))
+        swatch = tk.Canvas(row2, width=16, height=16, highlightthickness=1)
+        swatch.pack(side=tk.LEFT, padx=(0, 8))
+        try:
+            swatch.configure(bg=color)
+        except tk.TclError:
+            swatch.configure(bg="black")
+        color_var.trace_add("write", lambda *_a, s=swatch, cv=color_var: self._update_se_swatch(s, cv))
+
+        ttk.Label(row2, text="Tol:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row2, textvariable=tol_var, width=4).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row2, text="Retry Min (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row2, textvariable=retry_min_var, width=6).pack(side=tk.LEFT, padx=(0, 4))
+        ttk.Label(row2, text="Max:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row2, textvariable=retry_max_var, width=6).pack(side=tk.LEFT)
+
+        entry = {
+            "frame": outer_frame, "key": key_var,
+            "rx": rx_var, "ry": ry_var, "rw": rw_var, "rh": rh_var,
+            "color": color_var, "tolerance": tol_var,
+            "retry_min": retry_min_var, "retry_max": retry_max_var,
+        }
         self.status_effect_key_rows.append(entry)
+        _remove.__defaults__ = ([entry],)
 
-        def _remove(e=entry):
-            e["frame"].destroy()
-            self.status_effect_key_rows.remove(e)
-
-        ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
+    def _update_se_swatch(self, swatch, color_var):
+        try:
+            swatch.configure(bg=color_var.get().strip())
+        except tk.TclError:
+            pass
 
     # -- monitoring --
 
@@ -868,15 +907,42 @@ class AutoclickerApp:
                 messagebox.showwarning("No key", "All status effect key slots must have a key selected.")
                 return
             try:
-                se_min = int(row["min"].get())
-                se_max = int(row["max"].get())
+                se_rx = int(row["rx"].get())
+                se_ry = int(row["ry"].get())
+                se_rw = int(row["rw"].get())
+                se_rh = int(row["rh"].get())
             except ValueError:
-                messagebox.showwarning("Invalid", f"Status effect key '{k}': delay values must be numbers (ms).")
+                messagebox.showwarning("Invalid", f"Status effect '{k}': region X/Y/W/H must be integers.")
                 return
-            if se_min <= 0 or se_max < se_min:
-                messagebox.showwarning("Invalid", f"Status effect key '{k}': min > 0 and max >= min.")
+            if se_rw <= 0 or se_rh <= 0:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': region W and H must be > 0.")
                 return
-            status_effect_keys.append((k, se_min, se_max))
+            se_color = row["color"].get().strip()
+            if not se_color.startswith("#") or len(se_color) != 7:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': color must be hex like #FF0000.")
+                return
+            try:
+                se_tol = int(row["tolerance"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': tolerance must be a number.")
+                return
+            try:
+                se_retry_min = int(row["retry_min"].get())
+                se_retry_max = int(row["retry_max"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': retry interval values must be numbers (ms).")
+                return
+            if se_retry_min <= 0 or se_retry_max < se_retry_min:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': retry min > 0 and max >= min.")
+                return
+            status_effect_keys.append({
+                "key": k,
+                "region": (se_rx, se_ry, se_rw, se_rh),
+                "color": se_color,
+                "tolerance": se_tol,
+                "retry_min": se_retry_min,
+                "retry_max": se_retry_max,
+            })
 
         death_key = None
         death_delay_ms = 0
@@ -935,6 +1001,8 @@ class AutoclickerApp:
         HP visible (new)→ press status-effect keys immediately;
                           attacks delayed by engage_delay_ms
         HP visible      → press each attack key on its own independent timer
+        Status effects  → screen-read each effect's region; if color missing,
+                          re-apply at retry interval; once applied, never retry
         HP visible 20s+ → press *target_key* (stuck, re-target)
         HP was visible → now gone  → press *death_key* once (if enabled)
         """
@@ -945,7 +1013,9 @@ class AutoclickerApp:
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
-        next_se_press = [now] * len(status_effect_keys)
+
+        se_applied = [False] * len(status_effect_keys)
+        next_se_check = [now] * len(status_effect_keys)
 
         POLL_INTERVAL = 0.05
 
@@ -967,9 +1037,12 @@ class AutoclickerApp:
                     hp_since = now
                     next_press = [now + engage_s] * len(attack_keys)
 
-                    for i, (key, se_min, se_max) in enumerate(status_effect_keys):
-                        self._serial_send(f"PRESS;{key}")
-                        next_se_press[i] = now + random.uniform(se_min / 1000, se_max / 1000)
+                    se_applied = [False] * len(status_effect_keys)
+                    for i, se in enumerate(status_effect_keys):
+                        self._serial_send(f"PRESS;{se['key']}")
+                        next_se_check[i] = now + random.uniform(
+                            se["retry_min"] / 1000, se["retry_max"] / 1000
+                        )
 
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
@@ -985,10 +1058,23 @@ class AutoclickerApp:
                         if now >= next_press[i]:
                             self._serial_send(f"PRESS;{key}")
                             next_press[i] = now + random.uniform(a_min / 1000, a_max / 1000)
-                    for i, (key, se_min, se_max) in enumerate(status_effect_keys):
-                        if now >= next_se_press[i]:
-                            self._serial_send(f"PRESS;{key}")
-                            next_se_press[i] = now + random.uniform(se_min / 1000, se_max / 1000)
+
+                    for i, se in enumerate(status_effect_keys):
+                        if se_applied[i] or now < next_se_check[i]:
+                            continue
+                        try:
+                            se_region = se["region"]
+                            se_img = capture_region(*se_region)
+                            if color_present(se_img, se["color"], se["tolerance"]):
+                                se_applied[i] = True
+                            else:
+                                self._serial_send(f"PRESS;{se['key']}")
+                                next_se_check[i] = now + random.uniform(
+                                    se["retry_min"] / 1000, se["retry_max"] / 1000
+                                )
+                        except Exception:
+                            next_se_check[i] = now + 1.0
+
                     time.sleep(POLL_INTERVAL)
             else:
                 if prev_hp_visible and death_key:
@@ -1037,7 +1123,13 @@ class AutoclickerApp:
                     for r in self.attack_key_rows
                 ],
                 "status_effect_keys": [
-                    {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
+                    {
+                        "key": r["key"].get(),
+                        "rx": r["rx"].get(), "ry": r["ry"].get(),
+                        "rw": r["rw"].get(), "rh": r["rh"].get(),
+                        "color": r["color"].get(), "tolerance": r["tolerance"].get(),
+                        "retry_min": r["retry_min"].get(), "retry_max": r["retry_max"].get(),
+                    }
                     for r in self.status_effect_key_rows
                 ],
                 "death_enabled": self.death_enabled_var.get(),
@@ -1119,7 +1211,15 @@ class AutoclickerApp:
                 row["frame"].destroy()
             self.status_effect_key_rows.clear()
             for se in saved_status_effects:
-                self._add_status_effect_key_row(se.get("key", "f1"), se.get("min", "3000"), se.get("max", "5000"))
+                self._add_status_effect_key_row(
+                    key=se.get("key", "f1"),
+                    region_x=se.get("rx", "0"), region_y=se.get("ry", "0"),
+                    region_w=se.get("rw", "50"), region_h=se.get("rh", "50"),
+                    color=se.get("color", "#FFFFFF"),
+                    tolerance=se.get("tolerance", "30"),
+                    retry_min=se.get("retry_min", "1000"),
+                    retry_max=se.get("retry_max", "2000"),
+                )
 
     # ------------------------------------------------------------------ #
     #  App lifecycle                                                       #
