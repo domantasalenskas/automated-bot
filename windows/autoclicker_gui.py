@@ -305,6 +305,13 @@ class AutoclickerApp:
         )
         self.cond_max_delay_var = tk.StringVar(value="400")
         ttk.Entry(trig_row3, textvariable=self.cond_max_delay_var, width=8).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(trig_row3, text="Stuck timeout (s):").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.stuck_timeout_var = tk.StringVar(value="20")
+        ttk.Entry(trig_row3, textvariable=self.stuck_timeout_var, width=6).pack(
             side=tk.LEFT
         )
 
@@ -672,6 +679,14 @@ class AutoclickerApp:
         if min_ms <= 0 or max_ms < min_ms:
             messagebox.showwarning("Invalid", "Min delay > 0 and max >= min.")
             return
+        try:
+            stuck_s = float(self.stuck_timeout_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Stuck timeout must be a number (s).")
+            return
+        if stuck_s <= 0:
+            messagebox.showwarning("Invalid", "Stuck timeout must be > 0.")
+            return
         key = self.cond_key_var.get()
         if not key:
             messagebox.showwarning("No key", "Select a key to press.")
@@ -687,7 +702,7 @@ class AutoclickerApp:
 
         self.monitor_thread = threading.Thread(
             target=self._monitor_loop,
-            args=(self.region, hp_color, tolerance, key, min_ms, max_ms),
+            args=(self.region, hp_color, tolerance, key, min_ms, max_ms, stuck_s),
             daemon=True,
         )
         self.monitor_thread.start()
@@ -699,9 +714,14 @@ class AutoclickerApp:
         self.monitor_stop_btn.config(state=tk.DISABLED)
         self.monitor_status_var.set("Idle")
 
-    def _monitor_loop(self, region, hp_color, tolerance, key, min_ms, max_ms):
-        """Background thread: HP bar visible → idle; HP bar gone → press key."""
+    def _monitor_loop(self, region, hp_color, tolerance, key, min_ms, max_ms, stuck_s):
+        """Background thread: HP bar visible → idle; HP bar gone → press key.
+
+        If the HP bar stays visible for longer than *stuck_s* seconds the
+        player is assumed stuck and the key is pressed to unstick.
+        """
         x, y, w, h = region
+        hp_since = None
 
         def _set_status(msg):
             self.root.after(0, lambda m=msg: self.monitor_status_var.set(m))
@@ -715,9 +735,21 @@ class AutoclickerApp:
                 continue
 
             if hp_visible:
-                _set_status("Monster alive \u2014 waiting")
-                time.sleep(0.2)
+                now = time.monotonic()
+                if hp_since is None:
+                    hp_since = now
+                elapsed = now - hp_since
+                if elapsed >= stuck_s:
+                    _set_status(f"Stuck ({int(elapsed)}s) \u2014 pressing key")
+                    self._serial_send(f"PRESS;{key}")
+                    hp_since = time.monotonic()
+                    delay = random.uniform(min_ms / 1000, max_ms / 1000)
+                    time.sleep(delay)
+                else:
+                    _set_status(f"Monster alive \u2014 waiting ({int(elapsed)}s)")
+                    time.sleep(0.2)
             else:
+                hp_since = None
                 _set_status("No HP \u2014 pressing key")
                 self._serial_send(f"PRESS;{key}")
                 delay = random.uniform(min_ms / 1000, max_ms / 1000)
