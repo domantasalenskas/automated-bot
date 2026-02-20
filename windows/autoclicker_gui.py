@@ -293,6 +293,40 @@ class AutoclickerApp:
             side=tk.LEFT
         )
 
+        # Unstuck movement sequence (triggered after 2 consecutive stucks)
+        unstuck_row1 = ttk.Frame(trigger_frame)
+        unstuck_row1.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(unstuck_row1, text="Unstuck key 1:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.unstuck_key1_var = tk.StringVar(value="left")
+        ttk.Combobox(
+            unstuck_row1,
+            textvariable=self.unstuck_key1_var,
+            values=KEY_OPTIONS,
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(unstuck_row1, text="Hold (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.unstuck_dur1_var = tk.StringVar(value="1000")
+        ttk.Entry(unstuck_row1, textvariable=self.unstuck_dur1_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(unstuck_row1, text="Key 2:").pack(side=tk.LEFT, padx=(0, 4))
+        self.unstuck_key2_var = tk.StringVar(value="up")
+        ttk.Combobox(
+            unstuck_row1,
+            textvariable=self.unstuck_key2_var,
+            values=KEY_OPTIONS,
+            width=10,
+            state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Label(unstuck_row1, text="Hold (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.unstuck_dur2_var = tk.StringVar(value="1000")
+        ttk.Entry(unstuck_row1, textvariable=self.unstuck_dur2_var, width=6).pack(
+            side=tk.LEFT
+        )
+
         # Targeting key (pressed when no HP / stuck)
         target_row = ttk.Frame(trigger_frame)
         target_row.pack(fill=tk.X, pady=(0, 4))
@@ -856,6 +890,20 @@ class AutoclickerApp:
         if stuck_s <= 0:
             messagebox.showwarning("Invalid", "Stuck timeout must be > 0.")
             return
+        unstuck_key1 = self.unstuck_key1_var.get()
+        unstuck_key2 = self.unstuck_key2_var.get()
+        if not unstuck_key1 or not unstuck_key2:
+            messagebox.showwarning("No key", "Select both unstuck movement keys.")
+            return
+        try:
+            unstuck_dur1 = int(self.unstuck_dur1_var.get())
+            unstuck_dur2 = int(self.unstuck_dur2_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Unstuck hold durations must be numbers (ms).")
+            return
+        if unstuck_dur1 <= 0 or unstuck_dur2 <= 0:
+            messagebox.showwarning("Invalid", "Unstuck hold durations must be > 0.")
+            return
         target_key = self.target_key_var.get()
         if not target_key:
             messagebox.showwarning("No key", "Select a targeting key.")
@@ -976,6 +1024,8 @@ class AutoclickerApp:
                 engage_delay_ms,
                 attack_keys, status_effect_keys,
                 death_key, death_delay_ms,
+                unstuck_key1, unstuck_dur1,
+                unstuck_key2, unstuck_dur2,
             ),
             daemon=True,
         )
@@ -994,6 +1044,8 @@ class AutoclickerApp:
         engage_delay_ms,
         attack_keys, status_effect_keys,
         death_key, death_delay_ms,
+        unstuck_key1, unstuck_dur1,
+        unstuck_key2, unstuck_dur2,
     ):
         """Background thread:
 
@@ -1004,12 +1056,14 @@ class AutoclickerApp:
         Status effects  → screen-read each effect's region; if color missing,
                           re-apply at retry interval; once applied, never retry
         HP visible 20s+ → press *target_key* (stuck, re-target)
+        Stuck 2x in row → movement sequence (hold keys) then re-target
         HP was visible → now gone  → press *death_key* once (if enabled)
         """
         x, y, w, h = region
         engage_s = engage_delay_ms / 1000
         hp_since = None
         prev_hp_visible = False
+        stuck_count = 0
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
@@ -1046,7 +1100,15 @@ class AutoclickerApp:
 
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
-                    _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
+                    stuck_count += 1
+                    if stuck_count >= 2:
+                        _set_status(f"Stuck x{stuck_count} \u2014 moving to unstuck")
+                        self._serial_send(f"HOLD;{unstuck_key1};{unstuck_dur1}")
+                        time.sleep(unstuck_dur1 / 1000)
+                        self._serial_send(f"HOLD;{unstuck_key2};{unstuck_dur2}")
+                        time.sleep(unstuck_dur2 / 1000)
+                    else:
+                        _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
                     self._serial_send(f"PRESS;{target_key}")
                     hp_since = time.monotonic()
                     delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
@@ -1083,6 +1145,7 @@ class AutoclickerApp:
                     time.sleep(death_delay_ms / 1000)
 
                 hp_since = None
+                stuck_count = 0
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
                 delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
@@ -1114,6 +1177,10 @@ class AutoclickerApp:
                 "hp_color": self.hp_color_var.get(),
                 "tolerance": self.tolerance_var.get(),
                 "stuck_timeout": self.stuck_timeout_var.get(),
+                "unstuck_key1": self.unstuck_key1_var.get(),
+                "unstuck_dur1": self.unstuck_dur1_var.get(),
+                "unstuck_key2": self.unstuck_key2_var.get(),
+                "unstuck_dur2": self.unstuck_dur2_var.get(),
                 "target_key": self.target_key_var.get(),
                 "target_min": self.target_min_var.get(),
                 "target_max": self.target_max_var.get(),
@@ -1182,6 +1249,14 @@ class AutoclickerApp:
             self.tolerance_var.set(data["tolerance"])
         if "stuck_timeout" in data:
             self.stuck_timeout_var.set(data["stuck_timeout"])
+        if "unstuck_key1" in data:
+            self.unstuck_key1_var.set(data["unstuck_key1"])
+        if "unstuck_dur1" in data:
+            self.unstuck_dur1_var.set(data["unstuck_dur1"])
+        if "unstuck_key2" in data:
+            self.unstuck_key2_var.set(data["unstuck_key2"])
+        if "unstuck_dur2" in data:
+            self.unstuck_dur2_var.set(data["unstuck_dur2"])
         if "target_key" in data:
             self.target_key_var.set(data["target_key"])
         if "target_min" in data:

@@ -59,6 +59,7 @@ BAUD = 115200
 CMD_START = "START"
 CMD_STOP = "STOP"
 CMD_PRESS = "PRESS"
+CMD_HOLD = "HOLD"
 
 
 def read_serial_line():
@@ -166,6 +167,19 @@ def main():
                     if key_name in KEY_MAP:
                         keyboard.press(KEY_MAP[key_name])
                         time.sleep(0.05)
+                        keyboard.release_all()
+
+            elif line.upper().startswith(CMD_HOLD + ";"):
+                parts = line.split(";")
+                if len(parts) == 3:
+                    key_name = parts[1].strip().lower()
+                    try:
+                        duration_ms = int(parts[2].strip())
+                    except ValueError:
+                        duration_ms = 0
+                    if key_name in KEY_MAP and duration_ms > 0:
+                        keyboard.press(KEY_MAP[key_name])
+                        time.sleep(duration_ms / 1000.0)
                         keyboard.release_all()
 
             elif line.upper().startswith(CMD_START + ";"):
