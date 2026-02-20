@@ -359,6 +359,21 @@ class AutoclickerApp:
             side=tk.LEFT
         )
 
+        # No-target timeout
+        notarget_row = ttk.Frame(trigger_frame)
+        notarget_row.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(notarget_row, text="No-target timeout (s):").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.no_target_timeout_var = tk.StringVar(value="120")
+        ttk.Entry(notarget_row, textvariable=self.no_target_timeout_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(
+            notarget_row, text="  (stop bot if no target found; 0 = disabled)",
+            foreground="gray",
+        ).pack(side=tk.LEFT, padx=(4, 0))
+
         # Attack start delay (wait after targeting before attacks begin)
         engage_row = ttk.Frame(trigger_frame)
         engage_row.pack(fill=tk.X, pady=(0, 4))
@@ -934,6 +949,15 @@ class AutoclickerApp:
             return
 
         try:
+            no_target_timeout_s = int(self.no_target_timeout_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "No-target timeout must be a number (seconds).")
+            return
+        if no_target_timeout_s < 0:
+            messagebox.showwarning("Invalid", "No-target timeout must be >= 0.")
+            return
+
+        try:
             engage_delay_ms = int(self.engage_delay_var.get())
         except ValueError:
             messagebox.showwarning("Invalid", "Attack start delay must be a number (ms).")
@@ -1037,6 +1061,7 @@ class AutoclickerApp:
                 self.region, hp_color, tolerance, stuck_s,
                 hp_drop_threshold,
                 target_key, tgt_min, tgt_max,
+                no_target_timeout_s,
                 engage_delay_ms,
                 attack_keys, status_effect_keys,
                 death_key, death_delay_ms,
@@ -1058,6 +1083,7 @@ class AutoclickerApp:
         self, region, hp_color, tolerance, stuck_s,
         hp_drop_threshold,
         target_key, tgt_min, tgt_max,
+        no_target_timeout_s,
         engage_delay_ms,
         attack_keys, status_effect_keys,
         death_key, death_delay_ms,
@@ -1081,6 +1107,7 @@ class AutoclickerApp:
         x, y, w, h = region
         engage_s = engage_delay_ms / 1000
         hp_since = None
+        no_target_since = None
         prev_hp_visible = False
         stuck_count = 0
         baseline_px = None
@@ -1111,6 +1138,7 @@ class AutoclickerApp:
             now = time.monotonic()
 
             if hp_visible:
+                no_target_since = None
                 if hp_since is None:
                     hp_since = now
                     next_press = [now + engage_s] * len(attack_keys)
@@ -1184,6 +1212,13 @@ class AutoclickerApp:
                     self._serial_send(f"PRESS;{death_key}")
                     time.sleep(death_delay_ms / 1000)
 
+                if no_target_since is None:
+                    no_target_since = now
+                elif no_target_timeout_s > 0 and (now - no_target_since) >= no_target_timeout_s:
+                    _set_status(f"No target for {no_target_timeout_s}s \u2014 stopping bot")
+                    self.root.after(0, self._stop_monitoring)
+                    break
+
                 hp_since = None
                 baseline_px = None
                 stuck_count = 0
@@ -1227,6 +1262,7 @@ class AutoclickerApp:
                 "target_min": self.target_min_var.get(),
                 "target_max": self.target_max_var.get(),
                 "engage_delay": self.engage_delay_var.get(),
+                "no_target_timeout": self.no_target_timeout_var.get(),
                 "attack_keys": [
                     {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
                     for r in self.attack_key_rows
@@ -1309,6 +1345,8 @@ class AutoclickerApp:
             self.target_max_var.set(data["target_max"])
         if "engage_delay" in data:
             self.engage_delay_var.set(data["engage_delay"])
+        if "no_target_timeout" in data:
+            self.no_target_timeout_var.set(data["no_target_timeout"])
         if "death_enabled" in data:
             self.death_enabled_var.set(data["death_enabled"])
         if "death_key" in data:
