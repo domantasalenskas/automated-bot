@@ -380,6 +380,47 @@ class AutoclickerApp:
             foreground="gray",
         ).pack(side=tk.LEFT, padx=(4, 0))
 
+        # HP verification settings (to avoid false 0 / None OCR readings)
+        hp_verify_frame = ttk.LabelFrame(trigger_frame, text="HP Reading Verification", padding=4)
+        hp_verify_frame.pack(fill=tk.X, pady=(4, 4))
+
+        hpv_row1 = ttk.Frame(hp_verify_frame)
+        hpv_row1.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(hpv_row1, text="Confirm zero/gone count:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.hp_confirm_count_var = tk.StringVar(value="3")
+        ttk.Entry(hpv_row1, textvariable=self.hp_confirm_count_var, width=4).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(
+            hpv_row1,
+            text="(consecutive 0/None reads before acting)",
+            foreground="gray",
+        ).pack(side=tk.LEFT)
+
+        hpv_row2 = ttk.Frame(hp_verify_frame)
+        hpv_row2.pack(fill=tk.X)
+        ttk.Label(hpv_row2, text="OCR threshold:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.ocr_threshold_var = tk.StringVar(value="180")
+        ttk.Entry(hpv_row2, textvariable=self.ocr_threshold_var, width=5).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(hpv_row2, text="OCR scale:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.ocr_scale_var = tk.StringVar(value="3")
+        ttk.Entry(hpv_row2, textvariable=self.ocr_scale_var, width=4).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(
+            hpv_row2,
+            text="(binary threshold 0-255; upscale factor)",
+            foreground="gray",
+        ).pack(side=tk.LEFT)
+
         # Attack keys (pressed while monster is targeted) – dynamic list
         attack_frame = ttk.LabelFrame(trigger_frame, text="Attack Keys", padding=4)
         attack_frame.pack(fill=tk.X, pady=(4, 0))
@@ -1066,6 +1107,33 @@ class AutoclickerApp:
             messagebox.showwarning("Invalid", "Attack start delay must be >= 0.")
             return
 
+        try:
+            hp_confirm_count = int(self.hp_confirm_count_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "HP confirm count must be an integer.")
+            return
+        if hp_confirm_count < 1:
+            messagebox.showwarning("Invalid", "HP confirm count must be >= 1.")
+            return
+
+        try:
+            ocr_threshold = int(self.ocr_threshold_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "OCR threshold must be an integer.")
+            return
+        if not 0 <= ocr_threshold <= 255:
+            messagebox.showwarning("Invalid", "OCR threshold must be between 0 and 255.")
+            return
+
+        try:
+            ocr_scale = int(self.ocr_scale_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "OCR scale must be an integer.")
+            return
+        if ocr_scale < 1:
+            messagebox.showwarning("Invalid", "OCR scale must be >= 1.")
+            return
+
         attack_keys = []
         for row in self.attack_key_rows:
             k = row["key"].get()
@@ -1176,6 +1244,8 @@ class AutoclickerApp:
                 death_key, death_delay_ms,
                 unstuck_key1, unstuck_dur1,
                 unstuck_key2, unstuck_dur2,
+                hp_confirm_count,
+                ocr_threshold, ocr_scale,
             ),
             daemon=True,
         )
@@ -1199,6 +1269,8 @@ class AutoclickerApp:
         death_key, death_delay_ms,
         unstuck_key1, unstuck_dur1,
         unstuck_key2, unstuck_dur2,
+        hp_confirm_count,
+        ocr_threshold, ocr_scale,
     ):
         """Background thread — OCR-based HP reading + template-based status effects.
 
@@ -1212,6 +1284,10 @@ class AutoclickerApp:
                           press *target_key* (stuck, re-target)
         Stuck 2x in row → movement sequence (hold keys) then re-target
         HP was visible → now gone → press *death_key* once (if enabled)
+
+        HP verification: a reading of 0 or None must occur *hp_confirm_count*
+        consecutive times before it is accepted.  Until confirmed the last
+        known-good HP value is used so the bot keeps attacking.
         """
         x, y, w, h = region
         engage_s = engage_delay_ms / 1000
@@ -1220,6 +1296,11 @@ class AutoclickerApp:
         prev_hp_visible = False
         prev_hp_pct = None
         stuck_count = 0
+
+        # HP verification state — tracks consecutive "suspicious" reads
+        hp_gone_streak = 0        # consecutive None reads
+        hp_zero_streak = 0        # consecutive 0.0 reads
+        last_good_hp = None       # last HP value that was > 0
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
@@ -1245,14 +1326,47 @@ class AutoclickerApp:
         while self.monitoring:
             try:
                 image = capture_region(x, y, w, h)
-                hp_pct = read_hp_percentage(image)
-                hp_visible = hp_pct is not None
+                raw_hp = read_hp_percentage(
+                    image,
+                    ocr_threshold=ocr_threshold,
+                    ocr_scale=ocr_scale,
+                )
             except Exception:
                 time.sleep(0.5)
                 continue
 
+            # --- HP verification: require hp_confirm_count consecutive ---
+            # --- suspicious reads before treating them as real.         ---
+            if raw_hp is None:
+                hp_gone_streak += 1
+                hp_zero_streak = 0
+            elif raw_hp == 0.0:
+                hp_zero_streak += 1
+                hp_gone_streak = 0
+            else:
+                hp_gone_streak = 0
+                hp_zero_streak = 0
+                last_good_hp = raw_hp
+
+            gone_confirmed = hp_gone_streak >= hp_confirm_count
+            zero_confirmed = hp_zero_streak >= hp_confirm_count
+
+            if raw_hp is None and not gone_confirmed and last_good_hp is not None:
+                hp_pct = last_good_hp
+            elif raw_hp == 0.0 and not zero_confirmed and last_good_hp is not None:
+                hp_pct = last_good_hp
+            else:
+                hp_pct = raw_hp
+
+            hp_visible = hp_pct is not None
+
             if hp_pct is not None:
-                _set_hp_live(f"HP: {hp_pct:.1f}%")
+                verify_note = ""
+                if raw_hp is None:
+                    verify_note = f" [raw: None x{hp_gone_streak}]"
+                elif raw_hp == 0.0 and not zero_confirmed:
+                    verify_note = f" [raw: 0 x{hp_zero_streak}]"
+                _set_hp_live(f"HP: {hp_pct:.1f}%{verify_note}")
             else:
                 _set_hp_live("HP: —")
 
@@ -1345,6 +1459,7 @@ class AutoclickerApp:
                 hp_since = None
                 prev_hp_pct = None
                 stuck_count = 0
+                last_good_hp = None
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
                 delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
@@ -1383,6 +1498,9 @@ class AutoclickerApp:
                 "target_min": self.target_min_var.get(),
                 "target_max": self.target_max_var.get(),
                 "engage_delay": self.engage_delay_var.get(),
+                "hp_confirm_count": self.hp_confirm_count_var.get(),
+                "ocr_threshold": self.ocr_threshold_var.get(),
+                "ocr_scale": self.ocr_scale_var.get(),
                 "no_target_timeout": self.no_target_timeout_var.get(),
                 "attack_keys": [
                     {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
@@ -1461,6 +1579,12 @@ class AutoclickerApp:
             self.target_max_var.set(data["target_max"])
         if "engage_delay" in data:
             self.engage_delay_var.set(data["engage_delay"])
+        if "hp_confirm_count" in data:
+            self.hp_confirm_count_var.set(data["hp_confirm_count"])
+        if "ocr_threshold" in data:
+            self.ocr_threshold_var.set(data["ocr_threshold"])
+        if "ocr_scale" in data:
+            self.ocr_scale_var.set(data["ocr_scale"])
         if "no_target_timeout" in data:
             self.no_target_timeout_var.set(data["no_target_timeout"])
         if "death_enabled" in data:

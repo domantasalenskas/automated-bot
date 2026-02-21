@@ -108,18 +108,25 @@ def _get_ocr_reader():
     return _ocr_reader
 
 
-def read_hp_percentage(image: Image.Image) -> float | None:
+def read_hp_percentage(
+    image: Image.Image,
+    ocr_threshold: int = 180,
+    ocr_scale: int = 3,
+) -> float | None:
     """Read the HP percentage text from *image* (a tightly cropped HP bar region).
+
+    *ocr_threshold* — binary threshold applied to grayscale (0-255).
+    *ocr_scale*     — integer upscale factor before OCR.
 
     Returns the numeric value (e.g. ``99.09``) or ``None`` if the text
     cannot be parsed.
     """
     gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
 
-    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+    _, thresh = cv2.threshold(gray, ocr_threshold, 255, cv2.THRESH_BINARY)
 
     h, w = thresh.shape
-    upscaled = cv2.resize(thresh, (w * 3, h * 3), interpolation=cv2.INTER_NEAREST)
+    upscaled = cv2.resize(thresh, (w * ocr_scale, h * ocr_scale), interpolation=cv2.INTER_NEAREST)
 
     reader = _get_ocr_reader()
     results = reader.readtext(upscaled, allowlist="0123456789.%", detail=0)
