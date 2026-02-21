@@ -1,9 +1,10 @@
 """
 Pico HID Autoclicker – Windows GUI
 Tab 1  Autoclicker – configure keys, min/max delay; Start/Stop via buttons or F12.
-Tab 2  Conditional Clicker – monitor a screen region's colors and press a key
-       when a trigger color disappears.
-Requires: pyserial, pynput, mss, Pillow.  Run: pip install -r requirements.txt
+Tab 2  Conditional Clicker – OCR-based HP reading and template-matched status effects.
+Tab 3  Status Effects Library – capture, preview, and manage status effect templates.
+Requires: pyserial, pynput, mss, Pillow, opencv-python, numpy, easyocr.
+Run: pip install -r requirements.txt
 """
 
 import tkinter as tk
@@ -18,8 +19,12 @@ import os
 
 try:
     from PIL import Image, ImageTk
-    from screen_reader import capture_region, get_unique_colors, color_present, count_color_pixels
+    from screen_reader import (
+        capture_region, get_unique_colors, color_present, count_color_pixels,
+        read_hp_percentage, match_template,
+    )
     from region_selector import RegionSelector
+    from template_store import list_templates, save_template, load_template, delete_template
 
     CONDITIONAL_AVAILABLE = True
 except ImportError:
@@ -58,6 +63,12 @@ def find_pico_ports():
             pico_ports.append(entry)
     chosen = pico_ports if pico_ports else all_ports
     return (chosen, bool(pico_ports))
+
+
+def _ask_template_name(parent):
+    """Pop a simple dialog asking the user for a template name. Returns str or None."""
+    import tkinter.simpledialog
+    return tkinter.simpledialog.askstring("Template Name", "Enter a name for this template:", parent=parent)
 
 
 class AutoclickerApp:
@@ -114,6 +125,7 @@ class AutoclickerApp:
 
         self._build_autoclicker_tab()
         self._build_conditional_tab()
+        self._build_templates_tab()
 
     # ---- Tab 1: Autoclicker -----------------------------------------
 
@@ -267,37 +279,16 @@ class AutoclickerApp:
 
         trig_row1 = ttk.Frame(trigger_frame)
         trig_row1.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(trig_row1, text="HP bar color:").pack(side=tk.LEFT, padx=(0, 4))
-        self.hp_color_var = tk.StringVar(value="#892015")
-        ttk.Entry(trig_row1, textvariable=self.hp_color_var, width=10).pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.hp_swatch = tk.Canvas(
-            trig_row1, width=20, height=20, bg="#892015", highlightthickness=1
-        )
-        self.hp_swatch.pack(side=tk.LEFT)
-        self.hp_color_var.trace_add("write", self._update_hp_swatch)
-
-        trig_row2 = ttk.Frame(trigger_frame)
-        trig_row2.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(trig_row2, text="Tolerance:").pack(side=tk.LEFT, padx=(0, 4))
-        self.tolerance_var = tk.StringVar(value="1")
-        ttk.Entry(trig_row2, textvariable=self.tolerance_var, width=6).pack(
-            side=tk.LEFT, padx=(0, 12)
-        )
-        ttk.Label(trig_row2, text="Stuck timeout (s):").pack(
+        ttk.Label(trig_row1, text="Stuck timeout (s):").pack(
             side=tk.LEFT, padx=(0, 4)
         )
         self.stuck_timeout_var = tk.StringVar(value="20")
-        ttk.Entry(trig_row2, textvariable=self.stuck_timeout_var, width=6).pack(
+        ttk.Entry(trig_row1, textvariable=self.stuck_timeout_var, width=6).pack(
             side=tk.LEFT, padx=(0, 12)
         )
-        ttk.Label(trig_row2, text="HP drop threshold (px):").pack(
-            side=tk.LEFT, padx=(0, 4)
-        )
-        self.hp_drop_threshold_var = tk.StringVar(value="100")
-        ttk.Entry(trig_row2, textvariable=self.hp_drop_threshold_var, width=6).pack(
-            side=tk.LEFT
+        self.hp_live_var = tk.StringVar(value="HP: —")
+        ttk.Label(trig_row1, textvariable=self.hp_live_var, foreground="blue").pack(
+            side=tk.LEFT, padx=(12, 0)
         )
 
         # Unstuck movement sequence (triggered after 2 consecutive stucks)
@@ -459,6 +450,138 @@ class AutoclickerApp:
         ttk.Label(
             ctrl_frame, textvariable=self.monitor_status_var, foreground="gray"
         ).pack(side=tk.LEFT, padx=(16, 0))
+
+    # ---- Tab 3: Status Effects Library --------------------------------
+
+    def _build_templates_tab(self):
+        tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab, text="Status Effects Library")
+
+        if not CONDITIONAL_AVAILABLE:
+            ttk.Label(
+                tab,
+                text="Requires mss, Pillow, opencv-python, easyocr.\nRun:  pip install -r requirements.txt",
+                foreground="red",
+            ).pack(pady=20)
+            return
+
+        paned = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        paned.pack(fill=tk.BOTH, expand=True)
+
+        # -- Left: template list --
+        left = ttk.LabelFrame(paned, text="Templates", padding=6)
+        paned.add(left, weight=1)
+
+        self.tpl_listbox = tk.Listbox(left, height=12, exportselection=False)
+        self.tpl_listbox.pack(fill=tk.BOTH, expand=True)
+        self.tpl_listbox.bind("<<ListboxSelect>>", self._on_template_select)
+
+        # -- Right: preview --
+        right = ttk.LabelFrame(paned, text="Preview", padding=6)
+        paned.add(right, weight=1)
+
+        self.tpl_preview_canvas = tk.Canvas(right, width=150, height=150, bg="black")
+        self.tpl_preview_canvas.pack(fill=tk.BOTH, expand=True)
+        self.tpl_name_var = tk.StringVar(value="")
+        ttk.Label(right, textvariable=self.tpl_name_var, font=("TkDefaultFont", 10, "bold")).pack(
+            pady=(4, 0)
+        )
+        self._tpl_preview_ref = None
+
+        # -- Bottom toolbar --
+        toolbar = ttk.Frame(tab)
+        toolbar.pack(fill=tk.X, pady=(6, 0))
+        ttk.Button(toolbar, text="Capture New", command=self._capture_new_template).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(toolbar, text="Delete", command=self._delete_selected_template).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(toolbar, text="Test Match", command=self._test_match_template).pack(
+            side=tk.LEFT
+        )
+
+        self._populate_template_list()
+
+    def _populate_template_list(self):
+        self.tpl_listbox.delete(0, tk.END)
+        self._template_items = list_templates()
+        for t in self._template_items:
+            self.tpl_listbox.insert(tk.END, f"{t['name']}  ({t['slug']})")
+
+    def _selected_template_slug(self):
+        sel = self.tpl_listbox.curselection()
+        if not sel:
+            return None
+        return self._template_items[sel[0]]["slug"]
+
+    def _on_template_select(self, _event=None):
+        slug = self._selected_template_slug()
+        if not slug:
+            return
+        img = load_template(slug)
+        if img is None:
+            return
+        cw = max(self.tpl_preview_canvas.winfo_width(), 100)
+        ch = max(self.tpl_preview_canvas.winfo_height(), 100)
+        iw, ih = img.size
+        scale = min(cw / max(iw, 1), ch / max(ih, 1), 4.0)
+        display = img.resize((max(1, int(iw * scale)), max(1, int(ih * scale))), Image.NEAREST)
+        self._tpl_preview_ref = ImageTk.PhotoImage(display)
+        self.tpl_preview_canvas.delete("all")
+        self.tpl_preview_canvas.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._tpl_preview_ref)
+        meta = [t for t in self._template_items if t["slug"] == slug]
+        self.tpl_name_var.set(meta[0]["name"] if meta else slug)
+
+    def _capture_new_template(self):
+        def _on_captured(sx, sy, sw, sh):
+            name = _ask_template_name(self.root)
+            if not name:
+                return
+            img = capture_region(sx, sy, sw, sh)
+            save_template(name, img, region=(sx, sy, sw, sh))
+            self._populate_template_list()
+            self._refresh_template_combos()
+
+        RegionSelector(self.root, _on_captured)
+
+    def _delete_selected_template(self):
+        slug = self._selected_template_slug()
+        if not slug:
+            messagebox.showinfo("No selection", "Select a template to delete.")
+            return
+        delete_template(slug)
+        self._populate_template_list()
+        self._refresh_template_combos()
+        self.tpl_preview_canvas.delete("all")
+        self.tpl_name_var.set("")
+
+    def _test_match_template(self):
+        slug = self._selected_template_slug()
+        if not slug:
+            messagebox.showinfo("No selection", "Select a template to test.")
+            return
+        tpl_img = load_template(slug)
+        if tpl_img is None:
+            messagebox.showwarning("Missing", "Template image not found on disk.")
+            return
+        meta = [t for t in self._template_items if t["slug"] == slug]
+        region = meta[0].get("region") if meta else None
+        if not region or len(region) != 4:
+            messagebox.showinfo("No region", "This template has no saved capture region.")
+            return
+        try:
+            screen_img = capture_region(*region)
+        except Exception as e:
+            messagebox.showerror("Capture error", str(e))
+            return
+        is_match = match_template(screen_img, tpl_img, threshold=0.8)
+        messagebox.showinfo(
+            "Test Match",
+            f"Template: {meta[0]['name']}\n"
+            f"Region: {region}\n"
+            f"Match: {'YES' if is_match else 'NO'}",
+        )
 
     # ------------------------------------------------------------------ #
     #  Shared: serial / port helpers                                       #
@@ -741,11 +864,7 @@ class AutoclickerApp:
             cw // 2, ch // 2, anchor=tk.CENTER, image=self._preview_image_ref
         )
 
-        try:
-            tolerance = int(self.tolerance_var.get())
-        except ValueError:
-            tolerance = 30
-        colors = get_unique_colors(image, tolerance)
+        colors = get_unique_colors(image, tolerance=30)
         self._display_colors(colors)
 
         self.root.after(500, self._update_preview)
@@ -764,20 +883,6 @@ class AutoclickerApp:
                 swatch.configure(bg="black")
             lbl = ttk.Label(row, text=hex_color, font=("Consolas", 9))
             lbl.pack(side=tk.LEFT)
-            lbl.bind(
-                "<Button-1>",
-                lambda _e, c=hex_color: self.hp_color_var.set(c),
-            )
-            swatch.bind(
-                "<Button-1>",
-                lambda _e, c=hex_color: self.hp_color_var.set(c),
-            )
-
-    def _update_hp_swatch(self, *_args):
-        try:
-            self.hp_swatch.configure(bg=self.hp_color_var.get().strip())
-        except tk.TclError:
-            pass
 
     # -- attack key rows --
 
@@ -819,7 +924,7 @@ class AutoclickerApp:
 
     def _add_status_effect_key_row(
         self, key="f1", region_x="0", region_y="0", region_w="50", region_h="50",
-        color="#FFFFFF", tolerance="30", retry_min="1000", retry_max="2000",
+        template_slug="", match_threshold="0.80", retry_min="1000", retry_max="2000",
     ):
         outer_frame = ttk.Frame(self.status_effect_keys_container)
         outer_frame.pack(fill=tk.X, pady=(2, 4))
@@ -829,8 +934,8 @@ class AutoclickerApp:
         ry_var = tk.StringVar(value=region_y)
         rw_var = tk.StringVar(value=region_w)
         rh_var = tk.StringVar(value=region_h)
-        color_var = tk.StringVar(value=color)
-        tol_var = tk.StringVar(value=tolerance)
+        template_var = tk.StringVar(value=template_slug)
+        threshold_var = tk.StringVar(value=match_threshold)
         retry_min_var = tk.StringVar(value=retry_min)
         retry_max_var = tk.StringVar(value=retry_max)
 
@@ -847,6 +952,16 @@ class AutoclickerApp:
             ttk.Label(row1, text=label).pack(side=tk.LEFT, padx=(0, 2))
             ttk.Entry(row1, textvariable=var, width=5).pack(side=tk.LEFT, padx=(0, 4))
 
+        def _select_se_region(rxv=rx_var, ryv=ry_var, rwv=rw_var, rhv=rh_var):
+            def _cb(sx, sy, sw, sh):
+                rxv.set(str(sx)); ryv.set(str(sy))
+                rwv.set(str(sw)); rhv.set(str(sh))
+            RegionSelector(self.root, _cb)
+
+        ttk.Button(row1, text="Select Region", command=_select_se_region).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+
         def _remove(e_ref=[None]):
             e_ref[0]["frame"].destroy()
             self.status_effect_key_rows.remove(e_ref[0])
@@ -855,37 +970,41 @@ class AutoclickerApp:
 
         row2 = ttk.Frame(outer_frame)
         row2.pack(fill=tk.X, pady=(2, 0))
-        ttk.Label(row2, text="Color:").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row2, textvariable=color_var, width=8).pack(side=tk.LEFT, padx=(0, 4))
-        swatch = tk.Canvas(row2, width=16, height=16, highlightthickness=1)
-        swatch.pack(side=tk.LEFT, padx=(0, 8))
-        try:
-            swatch.configure(bg=color)
-        except tk.TclError:
-            swatch.configure(bg="black")
-        color_var.trace_add("write", lambda *_a, s=swatch, cv=color_var: self._update_se_swatch(s, cv))
+        ttk.Label(row2, text="Template:").pack(side=tk.LEFT, padx=(0, 2))
+        tpl_slugs = [t["slug"] for t in list_templates()]
+        template_combo = ttk.Combobox(
+            row2, textvariable=template_var, values=tpl_slugs, width=14,
+        )
+        template_combo.pack(side=tk.LEFT, padx=(0, 8))
 
-        ttk.Label(row2, text="Tol:").pack(side=tk.LEFT, padx=(0, 2))
-        ttk.Entry(row2, textvariable=tol_var, width=4).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row2, text="Threshold:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row2, textvariable=threshold_var, width=5).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Label(row2, text="Retry Min (ms):").pack(side=tk.LEFT, padx=(0, 2))
         ttk.Entry(row2, textvariable=retry_min_var, width=6).pack(side=tk.LEFT, padx=(0, 4))
         ttk.Label(row2, text="Max:").pack(side=tk.LEFT, padx=(0, 2))
         ttk.Entry(row2, textvariable=retry_max_var, width=6).pack(side=tk.LEFT)
 
+        status_lbl = ttk.Label(row2, text="", width=6)
+        status_lbl.pack(side=tk.LEFT, padx=(8, 0))
+
         entry = {
             "frame": outer_frame, "key": key_var,
             "rx": rx_var, "ry": ry_var, "rw": rw_var, "rh": rh_var,
-            "color": color_var, "tolerance": tol_var,
+            "template": template_var, "threshold": threshold_var,
             "retry_min": retry_min_var, "retry_max": retry_max_var,
+            "template_combo": template_combo,
+            "status_label": status_lbl,
         }
         self.status_effect_key_rows.append(entry)
         _remove.__defaults__ = ([entry],)
 
-    def _update_se_swatch(self, swatch, color_var):
-        try:
-            swatch.configure(bg=color_var.get().strip())
-        except tk.TclError:
-            pass
+    def _refresh_template_combos(self):
+        """Refresh the values list on every status-effect template combobox."""
+        slugs = [t["slug"] for t in list_templates()]
+        for row in self.status_effect_key_rows:
+            combo = row.get("template_combo")
+            if combo:
+                combo["values"] = slugs
 
     # -- monitoring --
 
@@ -894,31 +1013,12 @@ class AutoclickerApp:
             messagebox.showwarning("No region", "Select a screen region first.")
             return
         try:
-            tolerance = int(self.tolerance_var.get())
-        except ValueError:
-            messagebox.showwarning("Invalid", "Tolerance must be a number.")
-            return
-        hp_color = self.hp_color_var.get().strip()
-        if not hp_color.startswith("#") or len(hp_color) != 7:
-            messagebox.showwarning(
-                "Invalid", "HP bar color must be a hex code like #892015."
-            )
-            return
-        try:
             stuck_s = float(self.stuck_timeout_var.get())
         except ValueError:
             messagebox.showwarning("Invalid", "Stuck timeout must be a number (s).")
             return
         if stuck_s <= 0:
             messagebox.showwarning("Invalid", "Stuck timeout must be > 0.")
-            return
-        try:
-            hp_drop_threshold = int(self.hp_drop_threshold_var.get())
-        except ValueError:
-            messagebox.showwarning("Invalid", "HP drop threshold must be a number (px).")
-            return
-        if hp_drop_threshold < 0:
-            messagebox.showwarning("Invalid", "HP drop threshold must be >= 0.")
             return
         unstuck_key1 = self.unstuck_key1_var.get()
         unstuck_key2 = self.unstuck_key2_var.get()
@@ -988,6 +1088,7 @@ class AutoclickerApp:
             return
 
         status_effect_keys = []
+        preloaded_templates = {}
         for row in self.status_effect_key_rows:
             k = row["key"].get()
             if not k:
@@ -1004,14 +1105,22 @@ class AutoclickerApp:
             if se_rw <= 0 or se_rh <= 0:
                 messagebox.showwarning("Invalid", f"Status effect '{k}': region W and H must be > 0.")
                 return
-            se_color = row["color"].get().strip()
-            if not se_color.startswith("#") or len(se_color) != 7:
-                messagebox.showwarning("Invalid", f"Status effect '{k}': color must be hex like #FF0000.")
+            tpl_slug = row["template"].get().strip()
+            if not tpl_slug:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': select a template.")
                 return
+            tpl_img = load_template(tpl_slug)
+            if tpl_img is None:
+                messagebox.showwarning("Missing", f"Status effect '{k}': template '{tpl_slug}' not found on disk.")
+                return
+            preloaded_templates[tpl_slug] = tpl_img
             try:
-                se_tol = int(row["tolerance"].get())
+                se_threshold = float(row["threshold"].get())
             except ValueError:
-                messagebox.showwarning("Invalid", f"Status effect '{k}': tolerance must be a number.")
+                messagebox.showwarning("Invalid", f"Status effect '{k}': threshold must be a number.")
+                return
+            if not 0 <= se_threshold <= 1:
+                messagebox.showwarning("Invalid", f"Status effect '{k}': threshold must be between 0 and 1.")
                 return
             try:
                 se_retry_min = int(row["retry_min"].get())
@@ -1025,8 +1134,8 @@ class AutoclickerApp:
             status_effect_keys.append({
                 "key": k,
                 "region": (se_rx, se_ry, se_rw, se_rh),
-                "color": se_color,
-                "tolerance": se_tol,
+                "template_slug": tpl_slug,
+                "threshold": se_threshold,
                 "retry_min": se_retry_min,
                 "retry_max": se_retry_max,
             })
@@ -1058,12 +1167,12 @@ class AutoclickerApp:
         self.monitor_thread = threading.Thread(
             target=self._monitor_loop,
             args=(
-                self.region, hp_color, tolerance, stuck_s,
-                hp_drop_threshold,
+                self.region, stuck_s,
                 target_key, tgt_min, tgt_max,
                 no_target_timeout_s,
                 engage_delay_ms,
                 attack_keys, status_effect_keys,
+                preloaded_templates,
                 death_key, death_delay_ms,
                 unstuck_key1, unstuck_dur1,
                 unstuck_key2, unstuck_dur2,
@@ -1078,43 +1187,39 @@ class AutoclickerApp:
         self.monitor_start_btn.config(state=tk.NORMAL)
         self.monitor_stop_btn.config(state=tk.DISABLED)
         self.monitor_status_var.set("Idle")
+        self.hp_live_var.set("HP: —")
 
     def _monitor_loop(
-        self, region, hp_color, tolerance, stuck_s,
-        hp_drop_threshold,
+        self, region, stuck_s,
         target_key, tgt_min, tgt_max,
         no_target_timeout_s,
         engage_delay_ms,
         attack_keys, status_effect_keys,
+        preloaded_templates,
         death_key, death_delay_ms,
         unstuck_key1, unstuck_dur1,
         unstuck_key2, unstuck_dur2,
     ):
-        """Background thread:
+        """Background thread — OCR-based HP reading + template-based status effects.
 
-        HP gone         → press *target_key* (find next monster)
+        HP gone (None)  → press *target_key* (find next monster)
         HP visible (new)→ press status-effect keys immediately;
                           attacks delayed by engage_delay_ms
         HP visible      → press each attack key on its own independent timer
-        Status effects  → screen-read each effect's region; if color missing,
-                          re-apply at retry interval; once applied, never retry
-        HP not dropping → every 500ms count HP pixels; if count hasn't dropped
-                          by more than hp_drop_threshold for stuck_s seconds,
+        Status effects  → template-match each effect's region; if not found,
+                          re-apply at retry interval; once matched, stop retrying
+        HP not dropping → if HP% hasn't decreased for stuck_s seconds,
                           press *target_key* (stuck, re-target)
         Stuck 2x in row → movement sequence (hold keys) then re-target
-        HP was visible → now gone  → press *death_key* once (if enabled)
+        HP was visible → now gone → press *death_key* once (if enabled)
         """
         x, y, w, h = region
         engage_s = engage_delay_ms / 1000
         hp_since = None
         no_target_since = None
         prev_hp_visible = False
+        prev_hp_pct = None
         stuck_count = 0
-        baseline_px = None
-        last_px_count = None
-        last_px_check = 0.0
-
-        PX_CHECK_INTERVAL = 0.5
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
@@ -1127,13 +1232,29 @@ class AutoclickerApp:
         def _set_status(msg):
             self.root.after(0, lambda m=msg: self.monitor_status_var.set(m))
 
+        def _set_hp_live(txt):
+            self.root.after(0, lambda t=txt: self.hp_live_var.set(t))
+
+        def _set_se_label(idx, txt):
+            if idx < len(self.status_effect_key_rows):
+                row = self.status_effect_key_rows[idx]
+                lbl = row.get("status_label")
+                if lbl:
+                    self.root.after(0, lambda t=txt, l=lbl: l.config(text=t))
+
         while self.monitoring:
             try:
                 image = capture_region(x, y, w, h)
-                hp_visible = color_present(image, hp_color, tolerance)
+                hp_pct = read_hp_percentage(image)
+                hp_visible = hp_pct is not None
             except Exception:
                 time.sleep(0.5)
                 continue
+
+            if hp_pct is not None:
+                _set_hp_live(f"HP: {hp_pct:.1f}%")
+            else:
+                _set_hp_live("HP: —")
 
             now = time.monotonic()
 
@@ -1141,9 +1262,8 @@ class AutoclickerApp:
                 no_target_since = None
                 if hp_since is None:
                     hp_since = now
+                    prev_hp_pct = hp_pct
                     next_press = [now + engage_s] * len(attack_keys)
-                    baseline_px = count_color_pixels(image, hp_color, tolerance)
-                    last_px_check = now
 
                     se_applied = [False] * len(status_effect_keys)
                     for i, se in enumerate(status_effect_keys):
@@ -1151,15 +1271,11 @@ class AutoclickerApp:
                         next_se_check[i] = now + random.uniform(
                             se["retry_min"] / 1000, se["retry_max"] / 1000
                         )
+                        _set_se_label(i, "")
 
-                if now - last_px_check >= PX_CHECK_INTERVAL:
-                    current_px = count_color_pixels(image, hp_color, tolerance)
-                    last_px_count = current_px
-                    if baseline_px is None:
-                        baseline_px = current_px
-                    elif current_px <= baseline_px - hp_drop_threshold:
-                        hp_since = now
-                    last_px_check = now
+                if prev_hp_pct is not None and hp_pct < prev_hp_pct:
+                    hp_since = now
+                prev_hp_pct = hp_pct
 
                 elapsed = now - hp_since
                 if elapsed >= stuck_s:
@@ -1174,16 +1290,20 @@ class AutoclickerApp:
                         _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
                     self._serial_send(f"PRESS;{target_key}")
                     hp_since = time.monotonic()
-                    baseline_px = None
+                    prev_hp_pct = None
                     delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                     time.sleep(delay)
                 else:
                     keys_desc = ", ".join(k for k, _, _ in attack_keys)
-                    if last_px_count is not None and baseline_px is not None:
-                        px_info = f" [HP: {last_px_count}px / base: {baseline_px}px]"
-                    else:
-                        px_info = ""
-                    _set_status(f"Attacking [{keys_desc}] ({int(elapsed)}s){px_info}")
+                    hp_info = f" [HP: {hp_pct:.1f}%]" if hp_pct is not None else ""
+                    se_parts = []
+                    for i, se in enumerate(status_effect_keys):
+                        slug = se["template_slug"]
+                        state = "ON" if se_applied[i] else "OFF"
+                        se_parts.append(f"{slug}: {state}")
+                    se_info = f" [{', '.join(se_parts)}]" if se_parts else ""
+                    _set_status(f"Attacking [{keys_desc}] ({int(elapsed)}s){hp_info}{se_info}")
+
                     for i, (key, a_min, a_max) in enumerate(attack_keys):
                         if now >= next_press[i]:
                             self._serial_send(f"PRESS;{key}")
@@ -1195,13 +1315,16 @@ class AutoclickerApp:
                         try:
                             se_region = se["region"]
                             se_img = capture_region(*se_region)
-                            if color_present(se_img, se["color"], se["tolerance"]):
+                            tpl_img = preloaded_templates[se["template_slug"]]
+                            if match_template(se_img, tpl_img, se["threshold"]):
                                 se_applied[i] = True
+                                _set_se_label(i, "ON")
                             else:
                                 self._serial_send(f"PRESS;{se['key']}")
                                 next_se_check[i] = now + random.uniform(
                                     se["retry_min"] / 1000, se["retry_max"] / 1000
                                 )
+                                _set_se_label(i, "OFF")
                         except Exception:
                             next_se_check[i] = now + 1.0
 
@@ -1220,7 +1343,7 @@ class AutoclickerApp:
                     break
 
                 hp_since = None
-                baseline_px = None
+                prev_hp_pct = None
                 stuck_count = 0
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
@@ -1229,6 +1352,7 @@ class AutoclickerApp:
 
             prev_hp_visible = hp_visible
 
+        _set_hp_live("HP: —")
         self.root.after(0, lambda: self.monitor_status_var.set("Idle"))
 
     # ------------------------------------------------------------------ #
@@ -1242,7 +1366,7 @@ class AutoclickerApp:
             "max_delay": self.max_delay_var.get(),
             "last_port": self.port_var.get(),
         }
-        if CONDITIONAL_AVAILABLE and hasattr(self, "hp_color_var"):
+        if CONDITIONAL_AVAILABLE and hasattr(self, "stuck_timeout_var"):
             data.update({
                 "region": {
                     "x": self.region_x_var.get(),
@@ -1250,10 +1374,7 @@ class AutoclickerApp:
                     "w": self.region_w_var.get(),
                     "h": self.region_h_var.get(),
                 },
-                "hp_color": self.hp_color_var.get(),
-                "tolerance": self.tolerance_var.get(),
                 "stuck_timeout": self.stuck_timeout_var.get(),
-                "hp_drop_threshold": self.hp_drop_threshold_var.get(),
                 "unstuck_key1": self.unstuck_key1_var.get(),
                 "unstuck_dur1": self.unstuck_dur1_var.get(),
                 "unstuck_key2": self.unstuck_key2_var.get(),
@@ -1272,7 +1393,8 @@ class AutoclickerApp:
                         "key": r["key"].get(),
                         "rx": r["rx"].get(), "ry": r["ry"].get(),
                         "rw": r["rw"].get(), "rh": r["rh"].get(),
-                        "color": r["color"].get(), "tolerance": r["tolerance"].get(),
+                        "template_slug": r["template"].get(),
+                        "match_threshold": r["threshold"].get(),
                         "retry_min": r["retry_min"].get(), "retry_max": r["retry_max"].get(),
                     }
                     for r in self.status_effect_key_rows
@@ -1308,7 +1430,7 @@ class AutoclickerApp:
             self.port_var.set(saved_port)
 
         # -- Conditional Clicker tab --
-        if not CONDITIONAL_AVAILABLE or not hasattr(self, "hp_color_var"):
+        if not CONDITIONAL_AVAILABLE or not hasattr(self, "stuck_timeout_var"):
             return
 
         region = data.get("region", {})
@@ -1321,14 +1443,8 @@ class AutoclickerApp:
         if "h" in region:
             self.region_h_var.set(region["h"])
 
-        if "hp_color" in data:
-            self.hp_color_var.set(data["hp_color"])
-        if "tolerance" in data:
-            self.tolerance_var.set(data["tolerance"])
         if "stuck_timeout" in data:
             self.stuck_timeout_var.set(data["stuck_timeout"])
-        if "hp_drop_threshold" in data:
-            self.hp_drop_threshold_var.set(data["hp_drop_threshold"])
         if "unstuck_key1" in data:
             self.unstuck_key1_var.set(data["unstuck_key1"])
         if "unstuck_dur1" in data:
@@ -1372,8 +1488,8 @@ class AutoclickerApp:
                     key=se.get("key", "f1"),
                     region_x=se.get("rx", "0"), region_y=se.get("ry", "0"),
                     region_w=se.get("rw", "50"), region_h=se.get("rh", "50"),
-                    color=se.get("color", "#FFFFFF"),
-                    tolerance=se.get("tolerance", "30"),
+                    template_slug=se.get("template_slug", ""),
+                    match_threshold=se.get("match_threshold", "0.80"),
                     retry_min=se.get("retry_min", "1000"),
                     retry_max=se.get("retry_max", "2000"),
                 )

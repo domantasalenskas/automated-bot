@@ -1,9 +1,12 @@
 """
-Screen capture and color analysis utilities for the Conditional Clicker.
-Uses mss for fast screen grabs and Pillow for image processing.
+Screen capture and color/image analysis utilities for the Conditional Clicker.
+Uses mss for fast screen grabs, Pillow for image processing, OpenCV for
+template matching, and EasyOCR for reading HP percentage text.
 """
 
 import mss
+import numpy as np
+import cv2
 from PIL import Image
 
 MAX_ANALYSIS_PIXELS = 10000
@@ -87,3 +90,66 @@ def count_color_pixels(image, hex_color, tolerance=30):
         if dr * dr + dg * dg + db * db <= tol_sq:
             count += 1
     return count
+
+
+# ---------------------------------------------------------------------------
+#  EasyOCR lazy singleton – loaded once on first call to avoid re-loading
+#  the ~200 MB model on every HP check.
+# ---------------------------------------------------------------------------
+
+_ocr_reader = None
+
+
+def _get_ocr_reader():
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+        _ocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
+    return _ocr_reader
+
+
+def read_hp_percentage(image: Image.Image) -> float | None:
+    """Read the HP percentage text from *image* (a tightly cropped HP bar region).
+
+    Returns the numeric value (e.g. ``99.09``) or ``None`` if the text
+    cannot be parsed.
+    """
+    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+
+    _, thresh = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY)
+
+    h, w = thresh.shape
+    upscaled = cv2.resize(thresh, (w * 3, h * 3), interpolation=cv2.INTER_NEAREST)
+
+    reader = _get_ocr_reader()
+    results = reader.readtext(upscaled, allowlist="0123456789.%", detail=0)
+
+    text = "".join(results).strip().replace("%", "")
+    if not text:
+        return None
+    try:
+        value = float(text)
+        if 0 <= value <= 100:
+            return value
+    except ValueError:
+        pass
+    return None
+
+
+def match_template(screen_image: Image.Image, template_image: Image.Image,
+                   threshold: float = 0.8) -> bool:
+    """Return ``True`` if *template_image* is found inside *screen_image*.
+
+    Uses OpenCV normalised cross-correlation (``TM_CCOEFF_NORMED``).
+    """
+    screen_bgr = cv2.cvtColor(np.array(screen_image), cv2.COLOR_RGB2BGR)
+    template_bgr = cv2.cvtColor(np.array(template_image), cv2.COLOR_RGB2BGR)
+
+    sh, sw = screen_bgr.shape[:2]
+    th, tw = template_bgr.shape[:2]
+    if th > sh or tw > sw:
+        return False
+
+    result = cv2.matchTemplate(screen_bgr, template_bgr, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, _ = cv2.minMaxLoc(result)
+    return max_val >= threshold
