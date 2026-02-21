@@ -1403,7 +1403,7 @@ class AutoclickerApp:
                     else:
                         _set_status(f"Stuck ({int(elapsed)}s) \u2014 re-targeting")
                     self._serial_send(f"PRESS;{target_key}")
-                    hp_since = time.monotonic()
+                    hp_since = None
                     prev_hp_pct = None
                     delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
                     time.sleep(delay)
