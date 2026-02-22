@@ -449,6 +449,21 @@ class AutoclickerApp:
             status_frame, text="+ Add Status Effect Key", command=self._add_status_effect_key_row
         ).pack(anchor=tk.W, pady=(4, 0))
 
+        # Buffs (same template logic, checked on a timer only — not on new target)
+        buff_frame = ttk.LabelFrame(trigger_frame, text="Buffs (check periodically)", padding=4)
+        buff_frame.pack(fill=tk.X, pady=(4, 0))
+        buff_interval_row = ttk.Frame(buff_frame)
+        buff_interval_row.pack(fill=tk.X)
+        ttk.Label(buff_interval_row, text="Check every (seconds):").pack(side=tk.LEFT, padx=(0, 4))
+        self.buff_interval_var = tk.StringVar(value="10")
+        ttk.Entry(buff_interval_row, textvariable=self.buff_interval_var, width=5).pack(side=tk.LEFT)
+        self.buff_keys_container = ttk.Frame(buff_frame)
+        self.buff_keys_container.pack(fill=tk.X)
+        self.buff_key_rows = []
+        ttk.Button(
+            buff_frame, text="+ Add Buff Key", command=self._add_buff_key_row
+        ).pack(anchor=tk.W, pady=(4, 0))
+
         # On-death key (pressed once when mob dies)
         death_frame = ttk.Frame(trigger_frame)
         death_frame.pack(fill=tk.X, pady=(6, 0))
@@ -1039,10 +1054,80 @@ class AutoclickerApp:
         self.status_effect_key_rows.append(entry)
         _remove.__defaults__ = ([entry],)
 
+    # -- buff key rows (same as status effects but checked on a timer, not on new target) --
+
+    def _add_buff_key_row(
+        self, key="f1", region_x="0", region_y="0", region_w="50", region_h="50",
+        template_slug="", match_threshold="0.80",
+    ):
+        outer_frame = ttk.Frame(self.buff_keys_container)
+        outer_frame.pack(fill=tk.X, pady=(2, 4))
+
+        key_var = tk.StringVar(value=key)
+        rx_var = tk.StringVar(value=region_x)
+        ry_var = tk.StringVar(value=region_y)
+        rw_var = tk.StringVar(value=region_w)
+        rh_var = tk.StringVar(value=region_h)
+        template_var = tk.StringVar(value=template_slug)
+        threshold_var = tk.StringVar(value=match_threshold)
+
+        row1 = ttk.Frame(outer_frame)
+        row1.pack(fill=tk.X)
+        ttk.Label(row1, text="Key:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Combobox(
+            row1, textvariable=key_var, values=KEY_OPTIONS,
+            width=8, state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        for label, var in [
+            ("X:", rx_var), ("Y:", ry_var), ("W:", rw_var), ("H:", rh_var),
+        ]:
+            ttk.Label(row1, text=label).pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Entry(row1, textvariable=var, width=5).pack(side=tk.LEFT, padx=(0, 4))
+
+        def _select_buff_region(rxv=rx_var, ryv=ry_var, rwv=rw_var, rhv=rh_var):
+            def _cb(sx, sy, sw, sh):
+                rxv.set(str(sx)); ryv.set(str(sy))
+                rwv.set(str(sw)); rhv.set(str(sh))
+            RegionSelector(self.root, _cb)
+
+        ttk.Button(row1, text="Select Region", command=_select_buff_region).pack(
+            side=tk.LEFT, padx=(4, 0)
+        )
+
+        def _remove(e_ref=[None]):
+            e_ref[0]["frame"].destroy()
+            self.buff_key_rows.remove(e_ref[0])
+
+        ttk.Button(row1, text="✕", width=3, command=_remove).pack(side=tk.RIGHT)
+
+        row2 = ttk.Frame(outer_frame)
+        row2.pack(fill=tk.X, pady=(2, 0))
+        ttk.Label(row2, text="Template:").pack(side=tk.LEFT, padx=(0, 2))
+        tpl_slugs = [t["slug"] for t in list_templates()]
+        template_combo = ttk.Combobox(
+            row2, textvariable=template_var, values=tpl_slugs, width=14,
+        )
+        template_combo.pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row2, text="Threshold:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row2, textvariable=threshold_var, width=5).pack(side=tk.LEFT)
+
+        entry = {
+            "frame": outer_frame, "key": key_var,
+            "rx": rx_var, "ry": ry_var, "rw": rw_var, "rh": rh_var,
+            "template": template_var, "threshold": threshold_var,
+            "template_combo": template_combo,
+        }
+        self.buff_key_rows.append(entry)
+        _remove.__defaults__ = ([entry],)
+
     def _refresh_template_combos(self):
-        """Refresh the values list on every status-effect template combobox."""
+        """Refresh the values list on every status-effect and buff template combobox."""
         slugs = [t["slug"] for t in list_templates()]
         for row in self.status_effect_key_rows:
+            combo = row.get("template_combo")
+            if combo:
+                combo["values"] = slugs
+        for row in self.buff_key_rows:
             combo = row.get("template_combo")
             if combo:
                 combo["values"] = slugs
@@ -1208,6 +1293,54 @@ class AutoclickerApp:
                 "retry_max": se_retry_max,
             })
 
+        buff_keys = []
+        preloaded_buff_templates = {}
+        try:
+            buff_interval_s = float(self.buff_interval_var.get())
+        except ValueError:
+            buff_interval_s = 10.0
+        if buff_interval_s <= 0:
+            buff_interval_s = 10.0
+        for row in self.buff_key_rows:
+            k = row["key"].get()
+            if not k:
+                messagebox.showwarning("No key", "All buff key slots must have a key selected (or remove the row).")
+                return
+            try:
+                brx = int(row["rx"].get())
+                bry = int(row["ry"].get())
+                brw = int(row["rw"].get())
+                brh = int(row["rh"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Buff '{k}': region X/Y/W/H must be integers.")
+                return
+            if brw <= 0 or brh <= 0:
+                messagebox.showwarning("Invalid", f"Buff '{k}': region W and H must be > 0.")
+                return
+            tpl_slug = row["template"].get().strip()
+            if not tpl_slug:
+                messagebox.showwarning("Invalid", f"Buff '{k}': select a template.")
+                return
+            tpl_img = load_template(tpl_slug)
+            if tpl_img is None:
+                messagebox.showwarning("Missing", f"Buff '{k}': template '{tpl_slug}' not found on disk.")
+                return
+            preloaded_buff_templates[tpl_slug] = tpl_img
+            try:
+                b_threshold = float(row["threshold"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Buff '{k}': threshold must be a number.")
+                return
+            if not 0 <= b_threshold <= 1:
+                messagebox.showwarning("Invalid", f"Buff '{k}': threshold must be between 0 and 1.")
+                return
+            buff_keys.append({
+                "key": k,
+                "region": (brx, bry, brw, brh),
+                "template_slug": tpl_slug,
+                "threshold": b_threshold,
+            })
+
         death_key = None
         death_delay_ms = 0
         if self.death_enabled_var.get():
@@ -1241,6 +1374,7 @@ class AutoclickerApp:
                 engage_delay_ms,
                 attack_keys, status_effect_keys,
                 preloaded_templates,
+                buff_keys, preloaded_buff_templates, buff_interval_s,
                 death_key, death_delay_ms,
                 unstuck_key1, unstuck_dur1,
                 unstuck_key2, unstuck_dur2,
@@ -1266,13 +1400,14 @@ class AutoclickerApp:
         engage_delay_ms,
         attack_keys, status_effect_keys,
         preloaded_templates,
+        buff_keys, preloaded_buff_templates, buff_interval_s,
         death_key, death_delay_ms,
         unstuck_key1, unstuck_dur1,
         unstuck_key2, unstuck_dur2,
         hp_confirm_count,
         ocr_threshold, ocr_scale,
     ):
-        """Background thread — OCR-based HP reading + template-based status effects.
+        """Background thread — OCR-based HP reading + template-based status effects + buffs.
 
         HP gone (None)  → press *target_key* (find next monster)
         HP visible (new)→ press status-effect keys immediately;
@@ -1280,6 +1415,8 @@ class AutoclickerApp:
         HP visible      → press each attack key on its own independent timer
         Status effects  → template-match each effect's region; if not found,
                           re-apply at retry interval; once matched, stop retrying
+        Buffs           → every buff_interval_s seconds, template-match each buff;
+                          if not found, press key (never reset on new target)
         HP not dropping → if HP% hasn't decreased for stuck_s seconds,
                           press *target_key* (stuck, re-target)
         Stuck 2x in row → movement sequence (hold keys) then re-target
@@ -1307,6 +1444,8 @@ class AutoclickerApp:
 
         se_applied = [False] * len(status_effect_keys)
         next_se_check = [now] * len(status_effect_keys)
+
+        next_buff_check = now + buff_interval_s if buff_keys else float("inf")
 
         POLL_INTERVAL = 0.05
 
@@ -1442,6 +1581,19 @@ class AutoclickerApp:
                         except Exception:
                             next_se_check[i] = now + 1.0
 
+                    # Buffs: check every buff_interval_s seconds (never reset on new target)
+                    if buff_keys and now >= next_buff_check:
+                        for b in buff_keys:
+                            try:
+                                b_region = b["region"]
+                                b_img = capture_region(*b_region)
+                                tpl_img = preloaded_buff_templates[b["template_slug"]]
+                                if not match_template(b_img, tpl_img, b["threshold"]):
+                                    self._serial_send(f"PRESS;{b['key']}")
+                            except Exception:
+                                pass
+                        next_buff_check = now + buff_interval_s
+
                     time.sleep(POLL_INTERVAL)
             else:
                 if prev_hp_visible and death_key:
@@ -1517,6 +1669,17 @@ class AutoclickerApp:
                     }
                     for r in self.status_effect_key_rows
                 ],
+                "buff_interval": self.buff_interval_var.get(),
+                "buff_keys": [
+                    {
+                        "key": r["key"].get(),
+                        "rx": r["rx"].get(), "ry": r["ry"].get(),
+                        "rw": r["rw"].get(), "rh": r["rh"].get(),
+                        "template_slug": r["template"].get(),
+                        "match_threshold": r["threshold"].get(),
+                    }
+                    for r in self.buff_key_rows
+                ],
                 "death_enabled": self.death_enabled_var.get(),
                 "death_key": self.death_key_var.get(),
                 "death_delay": self.death_delay_var.get(),
@@ -1587,6 +1750,8 @@ class AutoclickerApp:
             self.ocr_scale_var.set(data["ocr_scale"])
         if "no_target_timeout" in data:
             self.no_target_timeout_var.set(data["no_target_timeout"])
+        if "buff_interval" in data:
+            self.buff_interval_var.set(data["buff_interval"])
         if "death_enabled" in data:
             self.death_enabled_var.set(data["death_enabled"])
         if "death_key" in data:
@@ -1616,6 +1781,20 @@ class AutoclickerApp:
                     match_threshold=se.get("match_threshold", "0.80"),
                     retry_min=se.get("retry_min", "1000"),
                     retry_max=se.get("retry_max", "2000"),
+                )
+
+        saved_buffs = data.get("buff_keys", [])
+        if saved_buffs:
+            for row in list(self.buff_key_rows):
+                row["frame"].destroy()
+            self.buff_key_rows.clear()
+            for b in saved_buffs:
+                self._add_buff_key_row(
+                    key=b.get("key", "f1"),
+                    region_x=b.get("rx", "0"), region_y=b.get("ry", "0"),
+                    region_w=b.get("rw", "50"), region_h=b.get("rh", "50"),
+                    template_slug=b.get("template_slug", ""),
+                    match_threshold=b.get("match_threshold", "0.80"),
                 )
 
     # ------------------------------------------------------------------ #
