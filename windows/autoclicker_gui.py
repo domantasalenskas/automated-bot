@@ -273,8 +273,15 @@ class AutoclickerApp:
         self.colors_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # --- Trigger configuration ---
-        trigger_frame = ttk.LabelFrame(tab, text="Trigger Configuration", padding=6)
+        # --- Two-column layout: trigger config (left) | status effects & buffs (right) ---
+        main_content = ttk.Frame(tab)
+        main_content.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        left_col = ttk.Frame(main_content)
+        left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
+
+        # --- Trigger configuration (left column) ---
+        trigger_frame = ttk.LabelFrame(left_col, text="Trigger Configuration", padding=6)
         trigger_frame.pack(fill=tk.X, pady=(0, 6))
 
         trig_row1 = ttk.Frame(trigger_frame)
@@ -436,34 +443,6 @@ class AutoclickerApp:
             attack_frame, text="+ Add Attack Key", command=self._add_attack_key_row
         ).pack(anchor=tk.W, pady=(4, 0))
 
-        # Status effect keys (pressed immediately on target, then re-applied)
-        status_frame = ttk.LabelFrame(trigger_frame, text="Status Effect Keys", padding=4)
-        status_frame.pack(fill=tk.X, pady=(4, 0))
-
-        self.status_effect_keys_container = ttk.Frame(status_frame)
-        self.status_effect_keys_container.pack(fill=tk.X)
-
-        self.status_effect_key_rows = []
-
-        ttk.Button(
-            status_frame, text="+ Add Status Effect Key", command=self._add_status_effect_key_row
-        ).pack(anchor=tk.W, pady=(4, 0))
-
-        # Buffs (same template logic, checked on a timer only — not on new target)
-        buff_frame = ttk.LabelFrame(trigger_frame, text="Buffs (check periodically)", padding=4)
-        buff_frame.pack(fill=tk.X, pady=(4, 0))
-        buff_interval_row = ttk.Frame(buff_frame)
-        buff_interval_row.pack(fill=tk.X)
-        ttk.Label(buff_interval_row, text="Check every (seconds):").pack(side=tk.LEFT, padx=(0, 4))
-        self.buff_interval_var = tk.StringVar(value="10")
-        ttk.Entry(buff_interval_row, textvariable=self.buff_interval_var, width=5).pack(side=tk.LEFT)
-        self.buff_keys_container = ttk.Frame(buff_frame)
-        self.buff_keys_container.pack(fill=tk.X)
-        self.buff_key_rows = []
-        ttk.Button(
-            buff_frame, text="+ Add Buff Key", command=self._add_buff_key_row
-        ).pack(anchor=tk.W, pady=(4, 0))
-
         # On-death key (pressed once when mob dies)
         death_frame = ttk.Frame(trigger_frame)
         death_frame.pack(fill=tk.X, pady=(6, 0))
@@ -487,6 +466,38 @@ class AutoclickerApp:
         ttk.Entry(death_frame, textvariable=self.death_delay_var, width=6).pack(
             side=tk.LEFT
         )
+
+        # --- Right column: Status effects & Buffs ---
+        right_col = ttk.Frame(main_content)
+        right_col.pack(side=tk.RIGHT, fill=tk.BOTH, padx=(0, 0))
+
+        # Status effect keys (pressed immediately on target, then re-applied)
+        status_frame = ttk.LabelFrame(right_col, text="Status Effect Keys", padding=4)
+        status_frame.pack(fill=tk.X, pady=(0, 6))
+
+        self.status_effect_keys_container = ttk.Frame(status_frame)
+        self.status_effect_keys_container.pack(fill=tk.X)
+
+        self.status_effect_key_rows = []
+
+        ttk.Button(
+            status_frame, text="+ Add Status Effect Key", command=self._add_status_effect_key_row
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        # Buffs (same template logic, checked on a timer only — not on new target)
+        buff_frame = ttk.LabelFrame(right_col, text="Buffs (check periodically)", padding=4)
+        buff_frame.pack(fill=tk.X, pady=(0, 0))
+        buff_interval_row = ttk.Frame(buff_frame)
+        buff_interval_row.pack(fill=tk.X)
+        ttk.Label(buff_interval_row, text="Check every (seconds):").pack(side=tk.LEFT, padx=(0, 4))
+        self.buff_interval_var = tk.StringVar(value="10")
+        ttk.Entry(buff_interval_row, textvariable=self.buff_interval_var, width=5).pack(side=tk.LEFT)
+        self.buff_keys_container = ttk.Frame(buff_frame)
+        self.buff_keys_container.pack(fill=tk.X)
+        self.buff_key_rows = []
+        ttk.Button(
+            buff_frame, text="+ Add Buff Key", command=self._add_buff_key_row
+        ).pack(anchor=tk.W, pady=(4, 0))
 
         # --- Monitor controls ---
         ctrl_frame = ttk.Frame(tab)
