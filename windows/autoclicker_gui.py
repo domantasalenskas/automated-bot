@@ -1555,8 +1555,16 @@ class AutoclickerApp:
                     self._serial_send(f"PRESS;{target_key}")
                     hp_since = None
                     prev_hp_pct = None
-                    delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
-                    time.sleep(delay)
+                    target_wait_end = time.monotonic() + random.uniform(tgt_min / 1000, tgt_max / 1000)
+                    while self.monitoring and time.monotonic() < target_wait_end:
+                        time.sleep(POLL_INTERVAL)
+                        try:
+                            _img = capture_region(x, y, w, h)
+                            _raw = read_hp_percentage(_img, ocr_threshold=ocr_threshold, ocr_scale=ocr_scale)
+                            if _raw is not None and _raw > 0:
+                                break
+                        except Exception:
+                            pass
                 else:
                     keys_desc = ", ".join(k for k, _, _ in attack_keys)
                     hp_info = f" [HP: {hp_pct:.1f}%]" if hp_pct is not None else ""
@@ -1625,8 +1633,16 @@ class AutoclickerApp:
                 last_good_hp = None
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
-                delay = random.uniform(tgt_min / 1000, tgt_max / 1000)
-                time.sleep(delay)
+                target_wait_end = time.monotonic() + random.uniform(tgt_min / 1000, tgt_max / 1000)
+                while self.monitoring and time.monotonic() < target_wait_end:
+                    time.sleep(POLL_INTERVAL)
+                    try:
+                        _img = capture_region(x, y, w, h)
+                        _raw = read_hp_percentage(_img, ocr_threshold=ocr_threshold, ocr_scale=ocr_scale)
+                        if _raw is not None and _raw > 0:
+                            break
+                    except Exception:
+                        pass
 
             prev_hp_visible = hp_visible
 
