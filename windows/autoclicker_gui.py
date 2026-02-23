@@ -443,6 +443,29 @@ class AutoclickerApp:
             attack_frame, text="+ Add Attack Key", command=self._add_attack_key_row
         ).pack(anchor=tk.W, pady=(4, 0))
 
+        # Instant keys (pressed once on target acquisition, before everything else)
+        instant_frame = ttk.LabelFrame(trigger_frame, text="Instant Keys (once per target)", padding=4)
+        instant_frame.pack(fill=tk.X, pady=(4, 0))
+
+        self.instant_keys_container = ttk.Frame(instant_frame)
+        self.instant_keys_container.pack(fill=tk.X)
+
+        self.instant_key_rows = []
+
+        gap_row = ttk.Frame(instant_frame)
+        gap_row.pack(fill=tk.X, pady=(4, 0))
+        ttk.Label(gap_row, text="Gap before engaging (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.instant_gap_min_var = tk.StringVar(value="200")
+        ttk.Label(gap_row, text="Min:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(gap_row, textvariable=self.instant_gap_min_var, width=5).pack(side=tk.LEFT, padx=(0, 8))
+        self.instant_gap_max_var = tk.StringVar(value="500")
+        ttk.Label(gap_row, text="Max:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(gap_row, textvariable=self.instant_gap_max_var, width=5).pack(side=tk.LEFT)
+
+        ttk.Button(
+            instant_frame, text="+ Add Instant Key", command=self._add_instant_key_row
+        ).pack(anchor=tk.W, pady=(4, 0))
+
         # On-death key (pressed once when mob dies)
         death_frame = ttk.Frame(trigger_frame)
         death_frame.pack(fill=tk.X, pady=(6, 0))
@@ -987,6 +1010,39 @@ class AutoclickerApp:
 
         ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
 
+    # -- instant key rows --
+
+    def _add_instant_key_row(self, key="f1", min_ms="100", max_ms="300"):
+        row_frame = ttk.Frame(self.instant_keys_container)
+        row_frame.pack(fill=tk.X, pady=1)
+
+        key_var = tk.StringVar(value=key)
+        min_var = tk.StringVar(value=min_ms)
+        max_var = tk.StringVar(value=max_ms)
+
+        ttk.Label(row_frame, text="Key:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Combobox(
+            row_frame, textvariable=key_var, values=KEY_OPTIONS,
+            width=8, state="readonly",
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row_frame, text="Min (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=min_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+        ttk.Label(row_frame, text="Max (ms):").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=max_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8)
+        )
+
+        entry = {"frame": row_frame, "key": key_var, "min": min_var, "max": max_var}
+        self.instant_key_rows.append(entry)
+
+        def _remove(e=entry):
+            e["frame"].destroy()
+            self.instant_key_rows.remove(e)
+
+        ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
+
     # -- status effect key rows --
 
     def _add_status_effect_key_row(
@@ -1251,6 +1307,36 @@ class AutoclickerApp:
             messagebox.showwarning("No keys", "Add at least one attack key.")
             return
 
+        instant_keys = []
+        for row in self.instant_key_rows:
+            k = row["key"].get()
+            if not k:
+                messagebox.showwarning("No key", "All instant key slots must have a key selected.")
+                return
+            try:
+                ik_min = int(row["min"].get())
+                ik_max = int(row["max"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", f"Instant key '{k}': delay values must be numbers (ms).")
+                return
+            if ik_min < 0 or ik_max < ik_min:
+                messagebox.showwarning("Invalid", f"Instant key '{k}': min >= 0 and max >= min.")
+                return
+            instant_keys.append((k, ik_min, ik_max))
+
+        instant_gap_min = 200
+        instant_gap_max = 500
+        if instant_keys:
+            try:
+                instant_gap_min = int(self.instant_gap_min_var.get())
+                instant_gap_max = int(self.instant_gap_max_var.get())
+            except ValueError:
+                messagebox.showwarning("Invalid", "Instant gap min/max must be numbers (ms).")
+                return
+            if instant_gap_min < 0 or instant_gap_max < instant_gap_min:
+                messagebox.showwarning("Invalid", "Instant gap: min >= 0 and max >= min.")
+                return
+
         status_effect_keys = []
         preloaded_templates = {}
         for row in self.status_effect_key_rows:
@@ -1391,6 +1477,7 @@ class AutoclickerApp:
                 unstuck_key2, unstuck_dur2,
                 hp_confirm_count,
                 ocr_threshold, ocr_scale,
+                instant_keys, instant_gap_min, instant_gap_max,
             ),
             daemon=True,
         )
@@ -1417,6 +1504,7 @@ class AutoclickerApp:
         unstuck_key2, unstuck_dur2,
         hp_confirm_count,
         ocr_threshold, ocr_scale,
+        instant_keys=None, instant_gap_min=200, instant_gap_max=500,
     ):
         """Background thread — OCR-based HP reading + template-based status effects + buffs.
 
@@ -1437,6 +1525,8 @@ class AutoclickerApp:
         consecutive times before it is accepted.  Until confirmed the last
         known-good HP value is used so the bot keeps attacking.
         """
+        if instant_keys is None:
+            instant_keys = []
         x, y, w, h = region
         engage_s = engage_delay_ms / 1000
         hp_since = None
@@ -1527,6 +1617,14 @@ class AutoclickerApp:
                 if hp_since is None:
                     hp_since = now
                     prev_hp_pct = hp_pct
+
+                    if instant_keys:
+                        for ikey, i_min, i_max in instant_keys:
+                            time.sleep(random.uniform(i_min / 1000, i_max / 1000))
+                            self._serial_send(f"PRESS;{ikey}")
+                        time.sleep(random.uniform(instant_gap_min / 1000, instant_gap_max / 1000))
+
+                    now = time.monotonic()
                     next_press = [now + engage_s] * len(attack_keys)
 
                     se_applied = [False] * len(status_effect_keys)
@@ -1685,6 +1783,12 @@ class AutoclickerApp:
                     {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
                     for r in self.attack_key_rows
                 ],
+                "instant_keys": [
+                    {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
+                    for r in self.instant_key_rows
+                ],
+                "instant_gap_min": self.instant_gap_min_var.get(),
+                "instant_gap_max": self.instant_gap_max_var.get(),
                 "status_effect_keys": [
                     {
                         "key": r["key"].get(),
@@ -1793,6 +1897,18 @@ class AutoclickerApp:
             self.attack_key_rows.clear()
             for ak in saved_attacks:
                 self._add_attack_key_row(ak.get("key", "f1"), ak.get("min", "200"), ak.get("max", "1000"))
+
+        saved_instants = data.get("instant_keys", [])
+        if saved_instants:
+            for row in list(self.instant_key_rows):
+                row["frame"].destroy()
+            self.instant_key_rows.clear()
+            for ik in saved_instants:
+                self._add_instant_key_row(ik.get("key", "f1"), ik.get("min", "100"), ik.get("max", "300"))
+        if "instant_gap_min" in data:
+            self.instant_gap_min_var.set(data["instant_gap_min"])
+        if "instant_gap_max" in data:
+            self.instant_gap_max_var.set(data["instant_gap_max"])
 
         saved_status_effects = data.get("status_effect_keys", [])
         if saved_status_effects:
