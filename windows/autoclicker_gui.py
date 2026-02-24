@@ -47,7 +47,10 @@ KEY_OPTIONS = (
 # Raspberry Pi Pico (0x2E8A) and Adafruit/CircuitPython (0x239A) USB VIDs
 PICO_VIDS = (0x2E8A, 0x239A)
 BAUD = 115200
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+_APP_DIR = os.path.dirname(os.path.abspath(__file__))
+SETTINGS_PATH = os.path.join(_APP_DIR, "settings.json")
+CONFIGS_DIR = os.path.join(_APP_DIR, "configs")
+CONFIG_PATH = os.path.join(_APP_DIR, "config.json")  # legacy single-file path
 
 
 def find_pico_ports():
@@ -92,9 +95,11 @@ class AutoclickerApp:
         self.mouse_click_thread = None
         self._mouse_tracker_active = False
 
+        self._migrate_legacy_config()
         self._build_ui()
+        self._load_main_settings()
         self._refresh_ports()
-        self._load_settings()
+        self._load_selected_profile()
         self._start_f12_listener()
 
     # ------------------------------------------------------------------ #
@@ -132,6 +137,7 @@ class AutoclickerApp:
         self._build_conditional_tab()
         self._build_templates_tab()
         self._build_mouse_clicker_tab()
+        self._build_profiles_tab()
 
     # ---- Tab 1: Autoclicker -----------------------------------------
 
@@ -2026,11 +2032,245 @@ class AutoclickerApp:
         _set_hp_live("HP: —")
         self.root.after(0, lambda: self.monitor_status_var.set("Idle"))
 
+    # ---- Tab 5: Config Profiles --------------------------------------
+
+    def _build_profiles_tab(self):
+        tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab, text="Profiles")
+
+        # Profile selector
+        sel_frame = ttk.LabelFrame(tab, text="Select Profile", padding=8)
+        sel_frame.pack(fill=tk.X, pady=(0, 10))
+
+        row1 = ttk.Frame(sel_frame)
+        row1.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(row1, text="Profile:").pack(side=tk.LEFT, padx=(0, 6))
+        self.profile_var = tk.StringVar()
+        self.profile_combo = ttk.Combobox(
+            row1, textvariable=self.profile_var, width=24, state="readonly"
+        )
+        self.profile_combo.pack(side=tk.LEFT, padx=(0, 6), fill=tk.X, expand=True)
+        ttk.Button(row1, text="Refresh", command=self._refresh_profiles).pack(side=tk.LEFT)
+
+        btn_frame = ttk.Frame(sel_frame)
+        btn_frame.pack(fill=tk.X)
+        ttk.Button(btn_frame, text="Load", command=self._load_selected_profile).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(btn_frame, text="Save", command=self._save_current_profile).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(btn_frame, text="Save As…", command=self._save_profile_as).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        ttk.Button(btn_frame, text="Delete", command=self._delete_current_profile).pack(
+            side=tk.LEFT
+        )
+
+        # Active profile indicator
+        self.active_profile_var = tk.StringVar(value="No profile loaded")
+        ttk.Label(sel_frame, textvariable=self.active_profile_var, foreground="gray").pack(
+            anchor=tk.W, pady=(8, 0)
+        )
+
+        # Help text
+        help_frame = ttk.LabelFrame(tab, text="How it works", padding=8)
+        help_frame.pack(fill=tk.X, pady=(0, 10))
+        help_text = (
+            "Profiles are stored as JSON files in the configs/ folder.\n\n"
+            "• Load – Apply the selected profile to all tabs\n"
+            "• Save – Overwrite the selected profile with current settings\n"
+            "• Save As… – Save current settings under a new name\n"
+            "• Delete – Remove the selected profile file\n\n"
+            "Settings are also auto-saved to the active profile on exit."
+        )
+        ttk.Label(help_frame, text=help_text, wraplength=440, justify=tk.LEFT).pack(
+            anchor=tk.W
+        )
+
+        self._refresh_profiles()
+
+    # ------------------------------------------------------------------ #
+    #  Config profile management                                           #
+    # ------------------------------------------------------------------ #
+
+    def _migrate_legacy_config(self):
+        """Move old config.json into configs/ as 'default.json' if it exists."""
+        os.makedirs(CONFIGS_DIR, exist_ok=True)
+        default_path = os.path.join(CONFIGS_DIR, "default.json")
+        if os.path.isfile(CONFIG_PATH) and not os.path.isfile(default_path):
+            os.rename(CONFIG_PATH, default_path)
+
+    def _load_main_settings(self):
+        """Read settings.json and restore app-level state (last profile, etc.)."""
+        try:
+            with open(SETTINGS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return
+        last_profile = data.get("last_profile", "")
+        if last_profile and last_profile in list(self.profile_combo["values"]):
+            self.profile_var.set(last_profile)
+
+    def _save_main_settings(self):
+        """Persist app-level state to settings.json."""
+        data = {
+            "last_profile": self.profile_var.get(),
+        }
+        try:
+            with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def _refresh_profiles(self):
+        """Scan configs/ and populate the profile combobox."""
+        os.makedirs(CONFIGS_DIR, exist_ok=True)
+        names = sorted(
+            os.path.splitext(f)[0]
+            for f in os.listdir(CONFIGS_DIR)
+            if f.endswith(".json")
+        )
+        self.profile_combo["values"] = names
+        if not self.profile_var.get() and names:
+            self.profile_var.set(names[0])
+
+    def _profile_path(self, name=None):
+        """Return the full path for the given profile name (or the currently selected one)."""
+        name = name or self.profile_var.get()
+        if not name:
+            return None
+        return os.path.join(CONFIGS_DIR, f"{name}.json")
+
+    def _update_active_label(self, name=None):
+        name = name or self.profile_var.get()
+        if hasattr(self, "active_profile_var"):
+            if name:
+                self.active_profile_var.set(f"Active profile: {name}")
+            else:
+                self.active_profile_var.set("No profile loaded")
+
+    def _load_selected_profile(self):
+        """Load settings from the currently selected profile."""
+        path = self._profile_path()
+        if path and os.path.isfile(path):
+            self._clear_settings()
+            self._load_settings(path)
+            self._update_active_label()
+            self._save_main_settings()
+
+    def _save_current_profile(self):
+        """Save settings to the currently selected profile."""
+        path = self._profile_path()
+        if not path:
+            self._save_profile_as()
+            return
+        self._save_settings(path)
+        self._update_active_label()
+        self._save_main_settings()
+
+    def _save_profile_as(self):
+        """Prompt for a new profile name, save, and refresh the list."""
+        import tkinter.simpledialog
+        name = tkinter.simpledialog.askstring(
+            "Save Config As", "Enter profile name:", parent=self.root
+        )
+        if not name:
+            return
+        name = name.strip().replace(" ", "_")
+        if not name:
+            return
+        self.profile_var.set(name)
+        self._save_settings(self._profile_path(name))
+        self._refresh_profiles()
+        self._update_active_label(name)
+        self._save_main_settings()
+
+    def _delete_current_profile(self):
+        """Delete the currently selected profile file after confirmation."""
+        name = self.profile_var.get()
+        if not name:
+            return
+        if not messagebox.askyesno("Delete Profile", f"Delete profile '{name}'?"):
+            return
+        path = self._profile_path(name)
+        if path and os.path.isfile(path):
+            os.remove(path)
+        self.profile_var.set("")
+        self._refresh_profiles()
+        self._update_active_label()
+        self._save_main_settings()
+
+    def _clear_settings(self):
+        """Reset all UI fields to defaults so a fresh profile can be loaded cleanly."""
+        # Autoclicker tab
+        self.key_listbox.delete(0, tk.END)
+        self.min_delay_var.set("1000")
+        self.max_delay_var.set("1500")
+
+        # Mouse Clicker tab
+        if hasattr(self, "mouse_click_rows"):
+            for row in list(self.mouse_click_rows):
+                row["frame"].destroy()
+            self.mouse_click_rows.clear()
+            self._add_mouse_click_row()
+            self.mouse_min_delay_var.set("500")
+            self.mouse_max_delay_var.set("1500")
+            self.mouse_start_delay_var.set("3")
+            self.mouse_click_for_var.set("0")
+            self.mouse_pause_for_var.set("0")
+
+        # Conditional Clicker tab
+        if CONDITIONAL_AVAILABLE and hasattr(self, "stuck_timeout_var"):
+            self.region_x_var.set("0")
+            self.region_y_var.set("0")
+            self.region_w_var.set("200")
+            self.region_h_var.set("50")
+            self.stuck_timeout_var.set("30")
+            self.unstuck_key1_var.set("w")
+            self.unstuck_dur1_var.set("500")
+            self.unstuck_key2_var.set("d")
+            self.unstuck_dur2_var.set("500")
+            self.target_key_var.set("tab")
+            self.target_min_var.set("100")
+            self.target_max_var.set("200")
+            self.engage_delay_var.set("1500")
+            self.hp_confirm_count_var.set("3")
+            self.ocr_threshold_var.set("100")
+            self.ocr_scale_var.set("4")
+            self.no_target_timeout_var.set("5")
+            self.instant_gap_min_var.set("50")
+            self.instant_gap_max_var.set("150")
+            self.buff_interval_var.set("60")
+            self.death_enabled_var.set(False)
+            self.death_key_var.set("enter")
+            self.death_delay_var.set("3000")
+
+            for row in list(self.attack_key_rows):
+                row["frame"].destroy()
+            self.attack_key_rows.clear()
+            self._add_attack_key_row()
+
+            for row in list(self.instant_key_rows):
+                row["frame"].destroy()
+            self.instant_key_rows.clear()
+
+            for row in list(self.status_effect_key_rows):
+                row["frame"].destroy()
+            self.status_effect_key_rows.clear()
+
+            for row in list(self.buff_key_rows):
+                row["frame"].destroy()
+            self.buff_key_rows.clear()
+
     # ------------------------------------------------------------------ #
     #  Settings persistence                                                #
     # ------------------------------------------------------------------ #
 
-    def _save_settings(self):
+    def _save_settings(self, path=None):
+        path = path or self._profile_path()
+        if not path:
+            return
         data = {
             "keys": list(self.key_listbox.get(0, tk.END)),
             "min_delay": self.min_delay_var.get(),
@@ -2107,14 +2347,17 @@ class AutoclickerApp:
                 "pause_for": self.mouse_pause_for_var.get(),
             }
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
 
-    def _load_settings(self):
+    def _load_settings(self, path=None):
+        path = path or self._profile_path()
+        if not path:
+            return
         try:
-            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
@@ -2262,6 +2505,7 @@ class AutoclickerApp:
 
     def _on_close(self):
         self._save_settings()
+        self._save_main_settings()
         self.preview_active = False
         self.monitoring = False
         self.mouse_clicking = False
