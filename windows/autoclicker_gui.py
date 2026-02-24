@@ -87,6 +87,11 @@ class AutoclickerApp:
         self.preview_active = False
         self._preview_image_ref = None
 
+        # Mouse-clicker state
+        self.mouse_clicking = False
+        self.mouse_click_thread = None
+        self._mouse_tracker_active = False
+
         self._build_ui()
         self._refresh_ports()
         self._load_settings()
@@ -126,6 +131,7 @@ class AutoclickerApp:
         self._build_autoclicker_tab()
         self._build_conditional_tab()
         self._build_templates_tab()
+        self._build_mouse_clicker_tab()
 
     # ---- Tab 1: Autoclicker -----------------------------------------
 
@@ -673,6 +679,272 @@ class AutoclickerApp:
             f"Match: {'YES' if is_match else 'NO'}",
         )
 
+    # ---- Tab 4: Mouse Clicker ----------------------------------------
+
+    def _build_mouse_clicker_tab(self):
+        tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(tab, text="Mouse Clicker")
+
+        # --- Coordinate Tracker ---
+        tracker_frame = ttk.LabelFrame(tab, text="Coordinate Tracker", padding=6)
+        tracker_frame.pack(fill=tk.X, pady=(0, 8))
+        tracker_row = ttk.Frame(tracker_frame)
+        tracker_row.pack(fill=tk.X)
+        self.tracker_start_btn = ttk.Button(
+            tracker_row, text="Start Tracking", command=self._start_mouse_tracker,
+        )
+        self.tracker_start_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self.tracker_stop_btn = ttk.Button(
+            tracker_row, text="Stop Tracking", command=self._stop_mouse_tracker,
+            state=tk.DISABLED,
+        )
+        self.tracker_stop_btn.pack(side=tk.LEFT, padx=(0, 12))
+        self.mouse_pos_var = tk.StringVar(value="X: —  Y: —")
+        ttk.Label(
+            tracker_row, textvariable=self.mouse_pos_var, font=("Consolas", 10),
+        ).pack(side=tk.LEFT)
+
+        # --- Click Targets ---
+        targets_frame = ttk.LabelFrame(tab, text="Click Targets (in order)", padding=6)
+        targets_frame.pack(fill=tk.X, pady=(0, 8))
+        self.mouse_click_rows_container = ttk.Frame(targets_frame)
+        self.mouse_click_rows_container.pack(fill=tk.X)
+        self.mouse_click_rows = []
+        ttk.Button(
+            targets_frame, text="+ Add Click Target", command=self._add_mouse_click_row,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        # --- Timing ---
+        timing_frame = ttk.Frame(tab)
+        timing_frame.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(timing_frame, text="Min delay (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.mouse_min_delay_var = tk.StringVar(value="100")
+        ttk.Entry(timing_frame, textvariable=self.mouse_min_delay_var, width=8).pack(
+            side=tk.LEFT, padx=(0, 12),
+        )
+        ttk.Label(timing_frame, text="Max delay (ms):").pack(side=tk.LEFT, padx=(0, 4))
+        self.mouse_max_delay_var = tk.StringVar(value="300")
+        ttk.Entry(timing_frame, textvariable=self.mouse_max_delay_var, width=8).pack(
+            side=tk.LEFT, padx=(0, 12),
+        )
+        ttk.Label(timing_frame, text="Start delay (s):").pack(side=tk.LEFT, padx=(0, 4))
+        self.mouse_start_delay_var = tk.StringVar(value="3")
+        ttk.Entry(timing_frame, textvariable=self.mouse_start_delay_var, width=6).pack(
+            side=tk.LEFT,
+        )
+
+        # --- Active / Pause cycle ---
+        cycle_frame = ttk.LabelFrame(tab, text="Active / Pause Cycle", padding=6)
+        cycle_frame.pack(fill=tk.X, pady=(0, 8))
+        cycle_row = ttk.Frame(cycle_frame)
+        cycle_row.pack(fill=tk.X)
+        ttk.Label(cycle_row, text="Click for (s):").pack(side=tk.LEFT, padx=(0, 4))
+        self.mouse_click_for_var = tk.StringVar(value="10")
+        ttk.Entry(cycle_row, textvariable=self.mouse_click_for_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12),
+        )
+        ttk.Label(cycle_row, text="Pause for (s):").pack(side=tk.LEFT, padx=(0, 4))
+        self.mouse_pause_for_var = tk.StringVar(value="5")
+        ttk.Entry(cycle_row, textvariable=self.mouse_pause_for_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 12),
+        )
+        ttk.Label(
+            cycle_row, text="(0 = no pause / continuous)", foreground="gray",
+        ).pack(side=tk.LEFT)
+
+        # --- Controls ---
+        ctrl_frame = ttk.Frame(tab)
+        ctrl_frame.pack(fill=tk.X, pady=(8, 0))
+        self.mouse_start_btn = ttk.Button(
+            ctrl_frame, text="Start", command=self._start_mouse_clicking,
+        )
+        self.mouse_start_btn.pack(side=tk.LEFT, padx=(0, 8))
+        self.mouse_stop_btn = ttk.Button(
+            ctrl_frame, text="Stop", command=self._stop_mouse_clicking,
+            state=tk.DISABLED,
+        )
+        self.mouse_stop_btn.pack(side=tk.LEFT)
+        ttk.Label(
+            ctrl_frame, text="  F12 = Start/Stop (on this tab)", foreground="gray",
+        ).pack(side=tk.LEFT, padx=(16, 0))
+
+        # --- Status ---
+        self.mouse_status_var = tk.StringVar(value="Add targets and set timing.")
+        ttk.Label(tab, textvariable=self.mouse_status_var, foreground="gray").pack(
+            anchor=tk.W, pady=(8, 0),
+        )
+
+    def _add_mouse_click_row(self, x="0", y="0"):
+        row_frame = ttk.Frame(self.mouse_click_rows_container)
+        row_frame.pack(fill=tk.X, pady=1)
+
+        x_var = tk.StringVar(value=x)
+        y_var = tk.StringVar(value=y)
+
+        ttk.Label(row_frame, text="X:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=x_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8),
+        )
+        ttk.Label(row_frame, text="Y:").pack(side=tk.LEFT, padx=(0, 2))
+        ttk.Entry(row_frame, textvariable=y_var, width=6).pack(
+            side=tk.LEFT, padx=(0, 8),
+        )
+
+        def _capture(xv=x_var, yv=y_var):
+            try:
+                from pynput.mouse import Controller
+                pos = Controller().position
+                xv.set(str(int(pos[0])))
+                yv.set(str(int(pos[1])))
+            except Exception:
+                pass
+
+        ttk.Button(row_frame, text="Capture", command=_capture).pack(
+            side=tk.LEFT, padx=(0, 4),
+        )
+
+        entry = {"frame": row_frame, "x": x_var, "y": y_var}
+        self.mouse_click_rows.append(entry)
+
+        def _remove(e=entry):
+            e["frame"].destroy()
+            self.mouse_click_rows.remove(e)
+
+        ttk.Button(row_frame, text="✕", width=3, command=_remove).pack(side=tk.LEFT)
+
+    # -- Coordinate tracker --
+
+    def _start_mouse_tracker(self):
+        self._mouse_tracker_active = True
+        self.tracker_start_btn.config(state=tk.DISABLED)
+        self.tracker_stop_btn.config(state=tk.NORMAL)
+        self._update_mouse_tracker()
+
+    def _stop_mouse_tracker(self):
+        self._mouse_tracker_active = False
+        self.tracker_start_btn.config(state=tk.NORMAL)
+        self.tracker_stop_btn.config(state=tk.DISABLED)
+        self.mouse_pos_var.set("X: —  Y: —")
+
+    def _update_mouse_tracker(self):
+        if not self._mouse_tracker_active:
+            return
+        try:
+            from pynput.mouse import Controller
+            pos = Controller().position
+            self.mouse_pos_var.set(f"X: {int(pos[0])}  Y: {int(pos[1])}")
+        except Exception:
+            pass
+        self.root.after(50, self._update_mouse_tracker)
+
+    # -- Mouse clicking --
+
+    def _start_mouse_clicking(self):
+        if not self.mouse_click_rows:
+            messagebox.showwarning("No targets", "Add at least one click target.")
+            return
+
+        targets = []
+        for row in self.mouse_click_rows:
+            try:
+                tx = int(row["x"].get())
+                ty = int(row["y"].get())
+            except ValueError:
+                messagebox.showwarning("Invalid", "All X/Y values must be integers.")
+                return
+            targets.append((tx, ty))
+
+        try:
+            min_ms = int(self.mouse_min_delay_var.get())
+            max_ms = int(self.mouse_max_delay_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Min/max delay must be numbers (ms).")
+            return
+        if min_ms <= 0 or max_ms < min_ms:
+            messagebox.showwarning("Invalid", "Min delay > 0 and max >= min.")
+            return
+
+        try:
+            start_delay = float(self.mouse_start_delay_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Start delay must be a number (s).")
+            return
+        if start_delay < 0:
+            messagebox.showwarning("Invalid", "Start delay must be >= 0.")
+            return
+
+        try:
+            click_for = float(self.mouse_click_for_var.get())
+            pause_for = float(self.mouse_pause_for_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Click-for and pause-for must be numbers (s).")
+            return
+        if click_for < 0 or pause_for < 0:
+            messagebox.showwarning("Invalid", "Click-for and pause-for must be >= 0.")
+            return
+
+        self.mouse_clicking = True
+        self.mouse_start_btn.config(state=tk.DISABLED)
+        self.mouse_stop_btn.config(state=tk.NORMAL)
+        self.mouse_status_var.set(f"Starting in {start_delay:.0f}s...")
+
+        self.mouse_click_thread = threading.Thread(
+            target=self._mouse_click_loop,
+            args=(targets, min_ms, max_ms, start_delay, click_for, pause_for),
+            daemon=True,
+        )
+        self.mouse_click_thread.start()
+
+    def _stop_mouse_clicking(self):
+        self.mouse_clicking = False
+        self.mouse_start_btn.config(state=tk.NORMAL)
+        self.mouse_stop_btn.config(state=tk.DISABLED)
+        self.mouse_status_var.set("Stopped.")
+
+    def _mouse_click_loop(self, targets, min_ms, max_ms, start_delay, click_for, pause_for):
+        from pynput.mouse import Button, Controller
+        mouse = Controller()
+
+        def _set_status(msg):
+            self.root.after(0, lambda m=msg: self.mouse_status_var.set(m))
+
+        end = time.monotonic() + start_delay
+        while self.mouse_clicking and time.monotonic() < end:
+            remaining = end - time.monotonic()
+            _set_status(f"Starting in {remaining:.1f}s...")
+            time.sleep(0.1)
+
+        idx = 0
+        while self.mouse_clicking:
+            # --- Active phase ---
+            if click_for > 0:
+                phase_end = time.monotonic() + click_for
+            else:
+                phase_end = float("inf")
+
+            while self.mouse_clicking and time.monotonic() < phase_end:
+                x, y = targets[idx]
+                _set_status(f"Clicking ({x}, {y})")
+                mouse.position = (x, y)
+                time.sleep(0.01)
+                mouse.click(Button.left)
+                idx = (idx + 1) % len(targets)
+
+                delay = random.uniform(min_ms / 1000, max_ms / 1000)
+                wait_end = time.monotonic() + delay
+                while self.mouse_clicking and time.monotonic() < wait_end:
+                    time.sleep(0.05)
+
+            # --- Pause phase ---
+            if pause_for > 0 and self.mouse_clicking:
+                phase_end = time.monotonic() + pause_for
+                while self.mouse_clicking and time.monotonic() < phase_end:
+                    remaining = phase_end - time.monotonic()
+                    _set_status(f"Paused ({remaining:.1f}s remaining)")
+                    time.sleep(0.1)
+
+        _set_status("Stopped.")
+
     # ------------------------------------------------------------------ #
     #  Shared: serial / port helpers                                       #
     # ------------------------------------------------------------------ #
@@ -834,10 +1106,17 @@ class AutoclickerApp:
         self.status_var.set("Stopped.")
 
     def _on_f12(self):
-        if self.running:
-            self.root.after(0, self._on_stop)
+        active_tab = self.notebook.index(self.notebook.select())
+        if active_tab == 3:
+            if self.mouse_clicking:
+                self.root.after(0, self._stop_mouse_clicking)
+            else:
+                self.root.after(0, self._start_mouse_clicking)
         else:
-            self.root.after(0, self._do_start_from_f12)
+            if self.running:
+                self.root.after(0, self._on_stop)
+            else:
+                self.root.after(0, self._do_start_from_f12)
 
     def _do_start_from_f12(self):
         keys = self._get_keys()
@@ -1815,6 +2094,18 @@ class AutoclickerApp:
                 "death_key": self.death_key_var.get(),
                 "death_delay": self.death_delay_var.get(),
             })
+        if hasattr(self, "mouse_click_rows"):
+            data["mouse_clicker"] = {
+                "targets": [
+                    {"x": r["x"].get(), "y": r["y"].get()}
+                    for r in self.mouse_click_rows
+                ],
+                "min_delay": self.mouse_min_delay_var.get(),
+                "max_delay": self.mouse_max_delay_var.get(),
+                "start_delay": self.mouse_start_delay_var.get(),
+                "click_for": self.mouse_click_for_var.get(),
+                "pause_for": self.mouse_pause_for_var.get(),
+            }
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
@@ -1840,6 +2131,27 @@ class AutoclickerApp:
         saved_port = data.get("last_port", "")
         if saved_port and saved_port in list(self.port_combo["values"]):
             self.port_var.set(saved_port)
+
+        # -- Mouse Clicker tab --
+        mc = data.get("mouse_clicker", {})
+        if mc and hasattr(self, "mouse_click_rows"):
+            saved_targets = mc.get("targets", [])
+            if saved_targets:
+                for row in list(self.mouse_click_rows):
+                    row["frame"].destroy()
+                self.mouse_click_rows.clear()
+                for t in saved_targets:
+                    self._add_mouse_click_row(t.get("x", "0"), t.get("y", "0"))
+            if "min_delay" in mc:
+                self.mouse_min_delay_var.set(mc["min_delay"])
+            if "max_delay" in mc:
+                self.mouse_max_delay_var.set(mc["max_delay"])
+            if "start_delay" in mc:
+                self.mouse_start_delay_var.set(mc["start_delay"])
+            if "click_for" in mc:
+                self.mouse_click_for_var.set(mc["click_for"])
+            if "pause_for" in mc:
+                self.mouse_pause_for_var.set(mc["pause_for"])
 
         # -- Conditional Clicker tab --
         if not CONDITIONAL_AVAILABLE or not hasattr(self, "stuck_timeout_var"):
@@ -1952,6 +2264,8 @@ class AutoclickerApp:
         self._save_settings()
         self.preview_active = False
         self.monitoring = False
+        self.mouse_clicking = False
+        self._mouse_tracker_active = False
         if self.running:
             self._on_stop()
         self._close_serial()
