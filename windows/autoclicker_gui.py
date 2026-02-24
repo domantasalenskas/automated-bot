@@ -1880,12 +1880,10 @@ class AutoclickerApp:
 
             if raw_hp is None and not gone_confirmed and last_good_hp is not None:
                 hp_pct = last_good_hp
-            elif raw_hp == 0.0:
-                hp_pct = None
             else:
                 hp_pct = raw_hp
 
-            hp_visible = hp_pct is not None
+            hp_visible = hp_pct is not None and hp_pct > 0
 
             if hp_pct is not None:
                 verify_note = ""
