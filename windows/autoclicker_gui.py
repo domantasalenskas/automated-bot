@@ -405,16 +405,16 @@ class AutoclickerApp:
 
         hpv_row1 = ttk.Frame(hp_verify_frame)
         hpv_row1.pack(fill=tk.X, pady=(0, 2))
-        ttk.Label(hpv_row1, text="Confirm zero/gone count:").pack(
+        ttk.Label(hpv_row1, text="HP gone timeout (ms):").pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        self.hp_confirm_count_var = tk.StringVar(value="3")
-        ttk.Entry(hpv_row1, textvariable=self.hp_confirm_count_var, width=4).pack(
+        self.hp_gone_timeout_var = tk.StringVar(value="500")
+        ttk.Entry(hpv_row1, textvariable=self.hp_gone_timeout_var, width=6).pack(
             side=tk.LEFT, padx=(0, 12)
         )
         ttk.Label(
             hpv_row1,
-            text="(consecutive 0/None reads before acting)",
+            text="(0/None reads must persist this long before acting)",
             foreground="gray",
         ).pack(side=tk.LEFT)
 
@@ -1545,12 +1545,12 @@ class AutoclickerApp:
             return
 
         try:
-            hp_confirm_count = int(self.hp_confirm_count_var.get())
+            hp_gone_timeout_ms = int(self.hp_gone_timeout_var.get())
         except ValueError:
-            messagebox.showwarning("Invalid", "HP confirm count must be an integer.")
+            messagebox.showwarning("Invalid", "HP gone timeout must be an integer (ms).")
             return
-        if hp_confirm_count < 1:
-            messagebox.showwarning("Invalid", "HP confirm count must be >= 1.")
+        if hp_gone_timeout_ms < 50:
+            messagebox.showwarning("Invalid", "HP gone timeout must be >= 50 ms.")
             return
 
         try:
@@ -1760,7 +1760,7 @@ class AutoclickerApp:
                 death_key, death_delay_ms,
                 unstuck_key1, unstuck_dur1,
                 unstuck_key2, unstuck_dur2,
-                hp_confirm_count,
+                hp_gone_timeout_ms,
                 ocr_threshold, ocr_scale,
                 instant_keys, instant_gap_min, instant_gap_max,
             ),
@@ -1787,7 +1787,7 @@ class AutoclickerApp:
         death_key, death_delay_ms,
         unstuck_key1, unstuck_dur1,
         unstuck_key2, unstuck_dur2,
-        hp_confirm_count,
+        hp_gone_timeout_ms,
         ocr_threshold, ocr_scale,
         instant_keys=None, instant_gap_min=200, instant_gap_max=500,
     ):
@@ -1806,9 +1806,10 @@ class AutoclickerApp:
         Stuck 2x in row → movement sequence (hold keys) then re-target
         HP was visible → now gone → press *death_key* once (if enabled)
 
-        HP verification: a reading of 0 or None must occur *hp_confirm_count*
-        consecutive times before it is accepted.  Until confirmed the last
-        known-good HP value is used so the bot keeps attacking.
+        HP verification: a reading of None must persist for at least
+        *hp_gone_timeout_ms* milliseconds before it is accepted.  Until
+        confirmed the last known-good HP value is used so the bot keeps
+        attacking.  A reading of 0% is trusted immediately (mob is dead).
         """
         if instant_keys is None:
             instant_keys = []
@@ -1820,10 +1821,10 @@ class AutoclickerApp:
         prev_hp_pct = None
         stuck_count = 0
 
-        # HP verification state — tracks consecutive "suspicious" reads
-        hp_gone_streak = 0        # consecutive None reads
-        hp_zero_streak = 0        # consecutive 0.0 reads
+        # HP verification state — time-based confirmation
+        hp_gone_since = None      # monotonic timestamp when None reads started
         last_good_hp = None       # last HP value that was > 0
+        gone_timeout_s = hp_gone_timeout_ms / 1000
 
         now = time.monotonic()
         next_press = [now] * len(attack_keys)
@@ -1860,26 +1861,27 @@ class AutoclickerApp:
                 time.sleep(0.5)
                 continue
 
-            # --- HP verification: require hp_confirm_count consecutive ---
-            # --- suspicious reads before treating them as real.         ---
+            now = time.monotonic()
+
+            # --- HP verification: None reads must persist for           ---
+            # --- gone_timeout_s before treating them as real.           ---
+            # --- 0% reads are trusted immediately (mob is dead).       ---
             if raw_hp is None:
-                hp_gone_streak += 1
-                hp_zero_streak = 0
+                if hp_gone_since is None:
+                    hp_gone_since = now
             elif raw_hp == 0.0:
-                hp_zero_streak += 1
-                hp_gone_streak = 0
+                hp_gone_since = None
             else:
-                hp_gone_streak = 0
-                hp_zero_streak = 0
+                hp_gone_since = None
                 last_good_hp = raw_hp
 
-            gone_confirmed = hp_gone_streak >= hp_confirm_count
-            zero_confirmed = hp_zero_streak >= hp_confirm_count
+            gone_elapsed = (now - hp_gone_since) if hp_gone_since is not None else 0.0
+            gone_confirmed = hp_gone_since is not None and gone_elapsed >= gone_timeout_s
 
             if raw_hp is None and not gone_confirmed and last_good_hp is not None:
                 hp_pct = last_good_hp
-            elif raw_hp == 0.0 and not zero_confirmed and last_good_hp is not None:
-                hp_pct = last_good_hp
+            elif raw_hp == 0.0:
+                hp_pct = None
             else:
                 hp_pct = raw_hp
 
@@ -1888,14 +1890,10 @@ class AutoclickerApp:
             if hp_pct is not None:
                 verify_note = ""
                 if raw_hp is None:
-                    verify_note = f" [raw: None x{hp_gone_streak}]"
-                elif raw_hp == 0.0 and not zero_confirmed:
-                    verify_note = f" [raw: 0 x{hp_zero_streak}]"
+                    verify_note = f" [raw: None {gone_elapsed:.1f}s]"
                 _set_hp_live(f"HP: {hp_pct:.1f}%{verify_note}")
             else:
                 _set_hp_live("HP: —")
-
-            now = time.monotonic()
 
             if hp_visible:
                 no_target_since = None
@@ -2014,6 +2012,7 @@ class AutoclickerApp:
                 prev_hp_pct = None
                 stuck_count = 0
                 last_good_hp = None
+                hp_gone_since = None
                 _set_status("No HP \u2014 targeting")
                 self._serial_send(f"PRESS;{target_key}")
                 target_wait_end = time.monotonic() + random.uniform(tgt_min / 1000, tgt_max / 1000)
@@ -2235,7 +2234,7 @@ class AutoclickerApp:
             self.target_min_var.set("100")
             self.target_max_var.set("200")
             self.engage_delay_var.set("1500")
-            self.hp_confirm_count_var.set("3")
+            self.hp_gone_timeout_var.set("500")
             self.ocr_threshold_var.set("100")
             self.ocr_scale_var.set("4")
             self.no_target_timeout_var.set("5")
@@ -2294,7 +2293,7 @@ class AutoclickerApp:
                 "target_min": self.target_min_var.get(),
                 "target_max": self.target_max_var.get(),
                 "engage_delay": self.engage_delay_var.get(),
-                "hp_confirm_count": self.hp_confirm_count_var.get(),
+                "hp_gone_timeout_ms": self.hp_gone_timeout_var.get(),
                 "ocr_threshold": self.ocr_threshold_var.get(),
                 "ocr_scale": self.ocr_scale_var.get(),
                 "no_target_timeout": self.no_target_timeout_var.get(),
@@ -2428,8 +2427,14 @@ class AutoclickerApp:
             self.target_max_var.set(data["target_max"])
         if "engage_delay" in data:
             self.engage_delay_var.set(data["engage_delay"])
-        if "hp_confirm_count" in data:
-            self.hp_confirm_count_var.set(data["hp_confirm_count"])
+        if "hp_gone_timeout_ms" in data:
+            self.hp_gone_timeout_var.set(data["hp_gone_timeout_ms"])
+        elif "hp_confirm_count" in data:
+            try:
+                old_count = int(data["hp_confirm_count"])
+                self.hp_gone_timeout_var.set(str(max(old_count * 50, 50)))
+            except (ValueError, TypeError):
+                pass
         if "ocr_threshold" in data:
             self.ocr_threshold_var.set(data["ocr_threshold"])
         if "ocr_scale" in data:
