@@ -423,20 +423,27 @@ class AutoclickerApp:
         ttk.Label(hpv_row2, text="OCR threshold:").pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        self.ocr_threshold_var = tk.StringVar(value="180")
+        self.ocr_threshold_var = tk.StringVar(value="125")
         ttk.Entry(hpv_row2, textvariable=self.ocr_threshold_var, width=5).pack(
             side=tk.LEFT, padx=(0, 12)
         )
         ttk.Label(hpv_row2, text="OCR scale:").pack(
             side=tk.LEFT, padx=(0, 4)
         )
-        self.ocr_scale_var = tk.StringVar(value="3")
+        self.ocr_scale_var = tk.StringVar(value="5")
         ttk.Entry(hpv_row2, textvariable=self.ocr_scale_var, width=4).pack(
+            side=tk.LEFT, padx=(0, 12)
+        )
+        ttk.Label(hpv_row2, text="Dimmer threshold:").pack(
+            side=tk.LEFT, padx=(0, 4)
+        )
+        self.ocr_dimmer_var = tk.StringVar(value="50")
+        ttk.Entry(hpv_row2, textvariable=self.ocr_dimmer_var, width=5).pack(
             side=tk.LEFT, padx=(0, 12)
         )
         ttk.Label(
             hpv_row2,
-            text="(binary threshold 0-255; upscale factor)",
+            text="(threshold 0-255; scale; dim fallback 0=off)",
             foreground="gray",
         ).pack(side=tk.LEFT)
 
@@ -1571,6 +1578,15 @@ class AutoclickerApp:
             messagebox.showwarning("Invalid", "OCR scale must be >= 1.")
             return
 
+        try:
+            dimmer_threshold = int(self.ocr_dimmer_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Dimmer threshold must be an integer.")
+            return
+        if not 0 <= dimmer_threshold <= 255:
+            messagebox.showwarning("Invalid", "Dimmer threshold must be between 0 and 255.")
+            return
+
         attack_keys = []
         for row in self.attack_key_rows:
             k = row["key"].get()
@@ -1761,7 +1777,7 @@ class AutoclickerApp:
                 unstuck_key1, unstuck_dur1,
                 unstuck_key2, unstuck_dur2,
                 hp_gone_timeout_ms,
-                ocr_threshold, ocr_scale,
+                ocr_threshold, ocr_scale, dimmer_threshold,
                 instant_keys, instant_gap_min, instant_gap_max,
             ),
             daemon=True,
@@ -1788,7 +1804,7 @@ class AutoclickerApp:
         unstuck_key1, unstuck_dur1,
         unstuck_key2, unstuck_dur2,
         hp_gone_timeout_ms,
-        ocr_threshold, ocr_scale,
+        ocr_threshold, ocr_scale, dimmer_threshold,
         instant_keys=None, instant_gap_min=200, instant_gap_max=500,
     ):
         """Background thread — OCR-based HP reading + template-based status effects + buffs.
@@ -1856,6 +1872,7 @@ class AutoclickerApp:
                     image,
                     ocr_threshold=ocr_threshold,
                     ocr_scale=ocr_scale,
+                    dimmer_threshold=dimmer_threshold,
                 )
             except Exception:
                 time.sleep(0.5)
@@ -1939,7 +1956,7 @@ class AutoclickerApp:
                         time.sleep(POLL_INTERVAL)
                         try:
                             _img = capture_region(x, y, w, h)
-                            _raw = read_hp_percentage(_img, ocr_threshold=ocr_threshold, ocr_scale=ocr_scale)
+                            _raw = read_hp_percentage(_img, ocr_threshold=ocr_threshold, ocr_scale=ocr_scale, dimmer_threshold=dimmer_threshold)
                             if _raw is not None and _raw > 0:
                                 break
                         except Exception:
@@ -2018,7 +2035,7 @@ class AutoclickerApp:
                     time.sleep(POLL_INTERVAL)
                     try:
                         _img = capture_region(x, y, w, h)
-                        _raw = read_hp_percentage(_img, ocr_threshold=ocr_threshold, ocr_scale=ocr_scale)
+                        _raw = read_hp_percentage(_img, ocr_threshold=ocr_threshold, ocr_scale=ocr_scale, dimmer_threshold=dimmer_threshold)
                         if _raw is not None and _raw > 0:
                             break
                     except Exception:
@@ -2233,8 +2250,9 @@ class AutoclickerApp:
             self.target_max_var.set("200")
             self.engage_delay_var.set("1500")
             self.hp_gone_timeout_var.set("500")
-            self.ocr_threshold_var.set("100")
-            self.ocr_scale_var.set("4")
+            self.ocr_threshold_var.set("125")
+            self.ocr_scale_var.set("5")
+            self.ocr_dimmer_var.set("50")
             self.no_target_timeout_var.set("5")
             self.instant_gap_min_var.set("50")
             self.instant_gap_max_var.set("150")
@@ -2294,6 +2312,7 @@ class AutoclickerApp:
                 "hp_gone_timeout_ms": self.hp_gone_timeout_var.get(),
                 "ocr_threshold": self.ocr_threshold_var.get(),
                 "ocr_scale": self.ocr_scale_var.get(),
+                "ocr_dimmer": self.ocr_dimmer_var.get(),
                 "no_target_timeout": self.no_target_timeout_var.get(),
                 "attack_keys": [
                     {"key": r["key"].get(), "min": r["min"].get(), "max": r["max"].get()}
@@ -2437,6 +2456,8 @@ class AutoclickerApp:
             self.ocr_threshold_var.set(data["ocr_threshold"])
         if "ocr_scale" in data:
             self.ocr_scale_var.set(data["ocr_scale"])
+        if "ocr_dimmer" in data:
+            self.ocr_dimmer_var.set(data["ocr_dimmer"])
         if "no_target_timeout" in data:
             self.no_target_timeout_var.set(data["no_target_timeout"])
         if "buff_interval" in data:

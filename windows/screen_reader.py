@@ -108,29 +108,17 @@ def _get_ocr_reader():
     return _ocr_reader
 
 
-def read_hp_percentage(
-    image: Image.Image,
-    ocr_threshold: int = 180,
-    ocr_scale: int = 3,
+def _ocr_threshold_attempt(
+    gray: np.ndarray,
+    threshold: int,
+    ocr_scale: int,
+    reader,
 ) -> float | None:
-    """Read the HP percentage text from *image* (a tightly cropped HP bar region).
-
-    *ocr_threshold* — binary threshold applied to grayscale (0-255).
-    *ocr_scale*     — integer upscale factor before OCR.
-
-    Returns the numeric value (e.g. ``99.09``) or ``None`` if the text
-    cannot be parsed.
-    """
-    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
-
-    _, thresh = cv2.threshold(gray, ocr_threshold, 255, cv2.THRESH_BINARY)
-
+    """Run OCR on *gray* image with a single binary threshold. Returns parsed value or None."""
+    _, thresh = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
     h, w = thresh.shape
     upscaled = cv2.resize(thresh, (w * ocr_scale, h * ocr_scale), interpolation=cv2.INTER_NEAREST)
-
-    reader = _get_ocr_reader()
     results = reader.readtext(upscaled, allowlist="0123456789.%", detail=0)
-
     text = "".join(results).strip().replace("%", "")
     if not text:
         return None
@@ -140,6 +128,34 @@ def read_hp_percentage(
             return value
     except ValueError:
         pass
+    return None
+
+
+def read_hp_percentage(
+    image: Image.Image,
+    ocr_threshold: int = 125,
+    ocr_scale: int = 5,
+    dimmer_threshold: int = 50,
+) -> float | None:
+    """Read the HP percentage text from *image* (a tightly cropped HP bar region).
+
+    *ocr_threshold*    — binary threshold applied to grayscale (0-255).
+    *ocr_scale*        — integer upscale factor before OCR.
+    *dimmer_threshold* — fallback binary threshold for dim text (e.g. "0.00%"
+                         on an empty HP bar).  Set to 0 to disable the fallback.
+
+    Returns the numeric value (e.g. ``99.09``) or ``None`` if the text
+    cannot be parsed.
+    """
+    gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+    reader = _get_ocr_reader()
+
+    result = _ocr_threshold_attempt(gray, ocr_threshold, ocr_scale, reader)
+    if result is not None:
+        return result
+
+    if dimmer_threshold > 0:
+        return _ocr_threshold_attempt(gray, dimmer_threshold, ocr_scale, reader)
     return None
 
 
